@@ -86,6 +86,14 @@ void main(void) {
             while (1) system_delay_ms(100);
         }
     }
+    /* 稳定优先：纠正中断优先级倒挂。
+     * 库在 mt9v03x_init() 内把 INT1(VSYNC) 与 LCM_DMA 都设为最高 3，
+     * 而 TIM1 的 5 ms 电机 PID 中断未设置优先级（默认最低 0），无法抢占 DMA。
+     * 这里把 TIM1 提到 3、把整帧搬运所在的 LCM_DMA 降到 1：
+     * 控制中断可抢占搬运，同时保留 ISR 内搬运带来的帧原子性。
+     * 注：IP/IPH 分支只置位（0->3 可用）；LCM_DMA 走 DMA_LCM_CFG 可双向设置。 */
+    interrupt_set_priority(TIMER1_IRQn, 3);
+    interrupt_set_priority(LCM_DMA_IRQn, 1);
     gpio_init(IO_PB1, GPI, 0, GPI_PULL_UP);
     gpio_init(IO_PB0, GPI, 0, GPI_PULL_UP);
     gpio_init(IO_P02, GPI, 0, GPI_PULL_UP);
@@ -93,13 +101,12 @@ void main(void) {
     gpio_init(IO_P32, GPI, 0, GPI_PULL_UP);
     gpio_init(IO_P90, GPO, 0, GPO_PUSH_PULL); //蜂鸣器
     //gpio_init(IO_P04, GPO, 0, GPO_PUSH_PULL); //示波器
-    { //等第一帧真实图像再估阈值（带超时，防止摄像头异常时死等）
+    { //等 DMA 中断搬入第一帧完整快照再估阈值（带超时，防止摄像头异常时死等）
         uint16 wait = 0;
-        while (!mt9v03x_finish_flag && ++wait < 20000);
+        while (!frameBusy && ++wait < 20000);
     }
-    mt9v03x_frame_snapshot(); //先把第一帧搬进算法缓冲，阈值估计才有数据（搬运已移出 ISR）
     LThreshold = RThreshold = threshold = imageInitThreshold();
-    mt9v03x_finish_flag = 0;
+    frameBusy = 0;   // 消费开机首帧，让后续帧正常搬运
     ips200_displayimage03x(&mt9v03x_frame[0][0], MT9V03X_W, MT9V03X_H, 0, 0); //上电显示一帧原始画面，确认摄像头正常
     while (1) {
         system_delay_ms(50);
@@ -193,8 +200,9 @@ void main(void) {
     ips200_show_string(0, 140, "TOP   : START");
     ips200_show_string(0, 160, "BOTTOM: SET LAP");
     ips200_show_string(0, 180, "IMAGE : STOP");
-    mt9v03x_finish_flag = 0;   // 丢弃选档期间累积的完成标志，第一拍处理当前画面
+    frameBusy = 0;   // 丢弃选档期间累积的旧帧，第一拍处理发车后的当前画面
     while (1) {
+        static uint16 noFrameTicks = 0;  // 帧看门狗：2 ms 节拍累计，约 1 s 无新帧则安全停车
         /* 按键与里程判定不依赖相机帧：摄像头停帧时仍能急停 / 收车 */
         uint8 tBtn = gpio_get_level(IO_P02), bBtn = gpio_get_level(IO_P01), sBtn = gpio_get_level(IO_P32);
         if (topBtn && !tBtn && (raceState == RACE_IDLE || raceState == RACE_STOPPED)) raceStart();
@@ -205,9 +213,8 @@ void main(void) {
         imBtn = sBtn;
         raceTask();
 
-        if (mt9v03x_finish_flag) {
-            mt9v03x_finish_flag = 0;
-            mt9v03x_frame_snapshot(); //后台搬运一帧（不放在中断里，避免阻塞 5 ms 控制中断）
+        if (frameBusy) {
+            noFrameTicks = 0;   // 收到完整帧，喂狗
             loadRoad();
             if (raceState == RACE_RUNNING || raceState == RACE_BRAKING) {
                 if (ENABLE_CROSS && (RUN_MODE == CROSS ||
@@ -232,8 +239,13 @@ void main(void) {
             } else if (raceState == RACE_IDLE) {
                 raceShow();
             }
+            frameBusy = 0;   // 消费完毕，允许 ISR 搬入下一帧
+        } else if (++noFrameTicks > 500) {
+            /* 稳定优先：摄像头掉帧 / DMA 异常时，不允许保持上一拍打角继续全速跑 */
+            noFrameTicks = 0;
+            if (raceState == RACE_RUNNING || raceState == RACE_BRAKING) raceStopNow();
         }
-        system_delay_ms(2);   // 简单去抖，避免空转主循环高频重复采样按键
+        system_delay_ms(2);   // 主循环 2 ms 节拍：按键去抖 + 帧看门狗计时基准
     }
 }
 

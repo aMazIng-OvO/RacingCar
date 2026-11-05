@@ -281,8 +281,10 @@ void DMA_UART4_IRQHandler(void) interrupt 20
 
 void DMA_LCM_IRQHandler() interrupt 21
 {
-    // 只置位"一帧采集完成"，22.5KB 的搬运放到主循环后台执行，避免阻塞 5ms 控制中断
     mt9v03x_dma_handler();
+    // 一帧采集完成：在中断内整帧搬进快照，保证算法永远读到完整帧。
+    // 本中断优先级在 main.c 被降为 1，TIM1 控制中断(3) 可抢占这次 22.5 KB 拷贝。
+    mt9v03x_frame_snapshot();
 }
 
 void TM11_IRQHandler() interrupt 30

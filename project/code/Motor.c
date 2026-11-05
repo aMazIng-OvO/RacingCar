@@ -146,8 +146,11 @@ void setServoDuty(int8 d) {
     // c4 是有符号标定参数，不能用 uint32 强转；sqrt_int 已支持 int32 全域。
     // 刹车段由 raceTask 锁定目标，这里不再按曲率重新抬高速度
     v = sqrt_int((int32) r * (int32) c4);
-    if (!handle && raceState != RACE_BRAKING && c4 > 0)
-        setSpeed = !r ? ts : (int16) func_min(v, (int32) ts);
+    if (!handle && raceState != RACE_BRAKING && c4 > 0) {
+        // 稳定优先：先算目标再一次写入 volatile，避免读-改-写被 PIT 插入
+        int16 target = !r ? ts : (int16) func_min(v, (int32) ts);
+        setSpeed = (int16) func_limit_ab((int32) target, 0, SAFE_SPEED_CEILING);
+    }
     R = d < 0 ? -r : r;
     duty = (int16) d * 12;
 }

@@ -15,7 +15,16 @@ libraries/ 目录整体来自「逐飞科技 STC32G144K 开源库」（V3.2.5）
 
 二、相对上游的修改说明
 ----------------------
-本仓库未修改 libraries/ 目录下的任何源文件，仅在其之上新增应用层代码。
+本仓库在 libraries/ 目录下做过如下修改（按 GPL-3.0 第 5(a) 条列明），其余源文件保持上游原样：
+
+  libraries/zf_common/zf_common_function.c
+      - 追加本项目自定义的 sqrt_int() / atan2_int() 整数实现（上游不提供）
+      - 2026-11-05（PR #1，TBssjq）：修正 16 位截断、sqrt 起始位 1L<<20 → 1L<<30
+      - 2026-11-05：文件由 GBK 转存为 UTF-8
+  libraries/zf_common/zf_common_headfile.h
+      - 第 111~116 行追加 Cross.h / Image.h / LRound.h / RRound.h /
+        Motor.h / Stop.h 六个应用层头文件引用，使 project/ 下文件可统一编译
+
 从上游模板派生、由本项目维护的文件如下：
 
   project/user/isr.c
@@ -37,6 +46,9 @@ libraries/ 目录整体来自「逐飞科技 STC32G144K 开源库」（V3.2.5）
   2. 图像双缓冲：采集缓冲与算法快照分离，避免 170 fps 下的帧撕裂；
   3. 新增里程发车/标定/定点停车状态机（Stop.c）；
   4. 删除原项目的斑马线、障碍块模块与 IPS200 图像叠加调试缓冲（释放 22.5 KB XRAM）。
+  5. 2026-11-05 稳定优先调整：整帧搬运放回 DMA 完成中断（frameBusy 门控保证帧原子性）、
+     中断优先级 TIM1=3 / LCM_DMA=1、全局速度天花板 SAFE_SPEED_CEILING、
+     刹车提前量 200 cm、约 1 s 帧看门狗安全停车（详见 README 第 12 节）。
 
 三、许可证
 ----------

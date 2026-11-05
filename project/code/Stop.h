@@ -15,7 +15,7 @@
 #define PULSE_PER_METER     1000    // 每米脉冲数（推车走 1 米读取 odometer）
 #define LAP_DISTANCE_CM     1200    // 赛道一圈的长度 cm
 #define STOP_OFFSET_CM      100     // 过起跑线后继续前进的停车点 cm（必须 0~200）
-#define BRAKE_DISTANCE_CM   150     // 提前开始刹车的距离 cm
+#define BRAKE_DISTANCE_CM   200     // 提前开始刹车的距离 cm（稳定优先：比原 150 多留 50 cm 制动余量）
 
 // 注意：C251 的 int 为 16 位，乘法必须先转 int32，否则 (1300*1000) 会溢出
 #define LAP_PULSE_DEFAULT   ((int32) ((int32) (LAP_DISTANCE_CM + STOP_OFFSET_CM) * PULSE_PER_METER / 100))

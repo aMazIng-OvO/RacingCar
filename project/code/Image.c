@@ -16,14 +16,20 @@ const uint8 static data halfBlock = block / 2, data halfH = MT9V03X_H / 2, data 
 Point LBorder[expRoadCount], RBorder[expRoadCount];
 int16 LBorderCount, RBorderCount;
 
-/* 双缓冲快照缓冲：DMA 直接写入库中的 mt9v03x_image（采集缓冲），
- * 主循环在每帧开始时调用 mt9v03x_frame_snapshot() 把它搬到本缓冲，算法只读本缓冲。
- * 搬运放在主循环（后台）而不是 DMA 中断里：TIM1 5 ms 控制中断（默认优先级 0）
- * 可以随时抢占主循环，22.5 KB 的拷贝因此不会推迟电机控制。 */
+/* 稳定优先：帧原子性由 DMA 完成中断保证，不允许算法读到半帧。
+ * mt9v03x_image 是 DMA 采集缓冲，mt9v03x_frame 是算法唯一读取的快照。
+ * 每帧 DMA 完成后在中断内整帧搬运；frameBusy 保证主循环处理期间快照不被覆盖，
+ * 来不及消费时直接丢弃新帧（可预期的降级，而不是概率性混帧）。
+ * TIM1 控制中断优先级 3、LCM_DMA 优先级 1（main.c 设置），控制中断可抢占本次搬运。 */
 uint8 mt9v03x_frame[MT9V03X_H][MT9V03X_W];
+volatile uint8 frameBusy = 0;
 
 void mt9v03x_frame_snapshot(void) {
-    memcpy(&mt9v03x_frame[0][0], &mt9v03x_image[0][0], MT9V03X_IMAGE_SIZE);
+    // 主循环还没消费完上一帧时跳过，防止快照被中途覆盖
+    if (!frameBusy) {
+        memcpy(&mt9v03x_frame[0][0], &mt9v03x_image[0][0], MT9V03X_IMAGE_SIZE);
+        frameBusy = 1;
+    }
 }
 
 uint8 getImagePointFilterSelf(uint8 i, uint8 j) {

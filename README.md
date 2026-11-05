@@ -99,24 +99,24 @@ Program Size: data=107.6  edata+hdata=8192  xdata=56294  const=50701  code=97140
 
 > 改动中断逻辑时注意：扩展中断的 handler 在 `isr_extended_*.c` 里，**不要**写回 `isr.c`；这两个文件里的编号只是占位，真实入口由 A51 决定。26 个 `EJMP` 目标符号、地址、C 函数名已逐条核对无错配；其余向量没有默认陷阱，**禁止使能未实现的扩展中断**。
 
-### 5.2 图像双缓冲
+### 5.2 图像双缓冲（稳定优先）
 
 ```
 摄像头 ──DMA──► mt9v03x_image（采集缓冲，库内固定地址）
-                      │  DMA 完成中断：只置位 mt9v03x_finish_flag
-                      ▼
-                主循环：mt9v03x_frame_snapshot()   memcpy 22.5 KB
+                      │  DMA 完成中断（LCM_DMA，优先级 1）
+                      │  mt9v03x_dma_handler() → mt9v03x_frame_snapshot()
+                      │  memcpy 22.5 KB，并置 frameBusy = 1
                       ▼
               mt9v03x_frame（稳定快照，所有算法只读这里）
-                      │
+                      │  主循环以 frameBusy 为门控
                       ▼
-                loadRoad() → 元素状态机 → 控制量
+          loadRoad() → 元素状态机 → 控制量 → frameBusy = 0
 ```
 
 - 算法层**一律读 `mt9v03x_frame`**，不要直接读 `mt9v03x_image`（那是 DMA 正在写的缓冲）。
-- 主循环以 `mt9v03x_finish_flag` 为触发条件：清标志 → 搬运一帧 → 处理；开机等第一帧时也会先搬一帧再估阈值。
-- **搬运放在主循环（后台）而不是 DMA 中断里**：TIM1 5 ms 控制中断（默认优先级 0）可以随时抢占主循环，因此 22.5 KB 的拷贝不会推迟电机控制。代价是当搬运耗时超过帧间隔（约 2.9 ms）时，快照底部少量行可能混入下一帧。
-- **按键扫描与 `raceTask()` 在帧门控之外**，摄像头停帧时急停/停车判定依然生效；选档结束后清一次 `mt9v03x_finish_flag`，丢弃开机旧帧。
+- **搬运在 DMA 完成中断内完成，保证帧原子性**：`frameBusy` 为 1 时 ISR 直接跳过搬运（丢弃来不及处理的新帧），不会出现半帧混入。这是可预期的"丢帧降级"，而不是概率性的错误输入。
+- **控制中断的确定性靠优先级保证，不靠把拷贝挪出 ISR**：库默认 `INT1`(VSYNC)=3、`LCM_DMA`=3，`TIM1` 未设置=0（最低）。`main.c` 在摄像头初始化后调用 `interrupt_set_priority(TIMER1_IRQn, 3)` 与 `interrupt_set_priority(LCM_DMA_IRQn, 1)`，5 ms 的电机 PID 中断可抢占 22.5 KB 拷贝。
+- **按键扫描与 `raceTask()` 在帧门控之外**，摄像头停帧时急停/停车判定依然生效；主循环另有约 1 s 的帧看门狗，比赛状态长时间收不到新帧会调用 `raceStopNow()` 安全停车。
 - 该方案替代了原来的 `outputImage` 调试缓冲（22.5 KB）。若需要恢复"二值化图/边界叠加"预览，必须把新增缓冲放到 `far` 区，否则会触发 `L107 ADDRESS SPACE OVERFLOW`（16 位 XDATA 只有 64 KB）。
 
 ## 6. 操作方式
@@ -142,19 +142,21 @@ Program Size: data=107.6  edata+hdata=8192  xdata=56294  const=50701  code=97140
 | 元素开关 | `main.c` `ENABLE_CROSS` / `ENABLE_ROUND` | 先关掉跑通纯循迹再逐个打开 |
 | 元素阈值 | `main.c` `ROUND_ROW / ROUND_NEAR_X / ROUND_FAR_MAX / CROSS_MAX` | 按画面点数标定 |
 | 图像阈值与边缘 | `Image.h` `block/cap/EDGE_DIFF/EDGE_RATIO/HIDE_ROW/CORNER_COS100` | 蓝底白赛道现场标定 |
-| 里程标定 | `Stop.h` `PULSE_PER_METER / LAP_DISTANCE_CM / STOP_OFFSET_CM / BRAKE_DISTANCE_CM` | 必须实测，`PULSE_PER_METER` 用推车 1 m 标 |
+| 里程标定 | `Stop.h` `PULSE_PER_METER / LAP_DISTANCE_CM / STOP_OFFSET_CM / BRAKE_DISTANCE_CM` | 必须实测，`PULSE_PER_METER` 用推车 1 m 标；`BRAKE_DISTANCE_CM` 稳定优先取 200（原 150） |
+| 速度天花板 | `Motor.h` `SAFE_SPEED_CEILING`（默认 400） | 稳定优先：8 档 `c5` 中超过该值的会被压到 400；需要提速只改这一个宏 |
+| 帧看门狗 | `main.c` `noFrameTicks > 500`（约 1 s） | 比赛状态连续无新帧则调用 `raceStopNow()` 安全停车 |
 
 > 注意：十字、环岛、停车等判据中的点数阈值都是针对特定赛道量化出来的，**换场地基本都需要重新标定**。
 >
-> **2026-11-05 修复后必须重新标定速度**：本项目自定义的整数开方函数 `sqrt_int()`（二次开发时追加在 `libraries/zf_common/zf_common_function.c`，逐飞上游库并不提供该函数）原来对 `x > 1048576` 的输入返回偏小值，而弯道限速 `√(R·c4)` 的乘积可达 5.3×10⁶。修复后限速值变大（如 5,292,000 从 2047 变为 2300），`c4`、各档 `c5` 以及 PID 参数需按实车重新调。
+> **2026-11-05 修复后必须重新标定速度**：本项目自定义的整数开方函数 `sqrt_int()`（二次开发时追加在 `libraries/zf_common/zf_common_function.c`，逐飞上游库并不提供该函数）原来对 `x > 1048576` 的输入返回偏小值，而弯道限速 `√(R·c4)` 的乘积可达 5.3×10⁶。修复后**弯道**限速值变大（如 5,292,000 从 2047 变为 2300）；直道仍由各档 `c5` 封顶，现再由 `SAFE_SPEED_CEILING` 统一兜住上限。`c4`、各档 `c5` 以及 PID 参数仍需按实车重新调。
 
 ## 8. 已知限制
 
 1. **参数强耦合于单条赛道**：元素判据以像素点数为单位，换赛道/换摄像头安装高度需重标。
-2. **快照搬运仍在主循环里做整帧拷贝（残余混帧风险）**：`mt9v03x_frame_snapshot()` 每帧 `memcpy` 22.5 KB，估算 1~3 ms，与 `loadRoad()` 串行占用主循环。它已移出 DMA 完成中断，因此不会再推迟 5 ms 电机控制；但 TIM1 控制中断优先级仍是最低 0、DMA_LCM/INT1(VSYNC) 仍是最高 3，**优先级倒置本身没有消除**，只是拷贝不再发生在高优先级 ISR 里。搬运与"下一帧 DMA 开始写入"之间没有硬同步——帧间隔约 2.9 ms（170 fps，DMA 传输约 3 ms），一旦拷贝耗时超过该间隔，快照末尾的行会被下一帧的开头行覆盖。**受影响区域不能当成无关区域**：`getLStart/getRStart` 从第 118 行向上搜索起点，`imageInitThreshold()` 采样第 92~113 行，都落在图像下半部分。彻底方案是 DMA 双缓冲乒乓（需逐飞 `.LIB` 支持运行时切换目标地址）；在实现之前，建议用 IO 翻转实测单次搬运耗时，并把主循环末尾 `system_delay_ms(2)` 的去抖延时一并计入帧预算。
+2. **整帧拷贝仍在 DMA 完成中断内，靠优先级抢占、而非搬移来保控制周期**：`mt9v03x_frame_snapshot()` 每帧 `memcpy` 22.5 KB，估算 1~3 ms。TIM1 已提到优先级 3、`LCM_DMA` 降到 1，控制中断可以抢占拷贝；但 **C251 的高优先级中断能否抢占正在执行的 ISR，尚未在实机/仿真中验证**，若硬件行为与预期不符，5 ms 控制周期仍会被推迟 1~3 ms，必须用 IO 翻转实测。拷贝被抢占而拉长时，`frameBusy` 会自然丢弃下一帧（降级而非出错），有效帧率会低于 170 fps，需实测掉帧率与循迹稳定性。彻底方案仍是 DMA 双缓冲乒乓：需逐飞 `.LIB` 支持运行时切换目标地址，且要再腾出 22.5 KB XRAM，而当前 XDATA 余量约 9.2 KB 并不足够。
 3. **去畸变查找表不可现场调整**：`reflection[120][188][2]` 是离线标定产物，摄像头位置或分辨率变化后必须重新生成。
 4. **仓库状态**：已纳入 Git 管理（`main` 分支），`.gitignore` 排除 `project/mdk/out_file/` 等编译产物；`LICENSE`、`NOTICE`、`libraries/LICENSE`、`libraries/doc/GPL3_permission_statement.txt` 已按 GPL-3.0 要求补齐。
-5. **逐飞库内仍有与 `version.txt` 声明不符的残留问题**（当前配置未触发，故未擅自改第三方 GPL 库）：`zf_driver_encoder.c` 正交编码器清零时"关计数器→写 0→开计数器"两行被注释（V3.1.1/3.1.2 声称已修）、`TIM6/8/10_ENCODER` 清零恢复写成 `|= (1<<3)`（应为 bit7）、`encoder_n & 0x0F + PWMF_ENCODER + 1` 缺括号；`zf_common_interrupt.c` 的 `IP/IPH` 分支用 `|=` 只能调高不能调低、`P8~PB` 分支移位溢出（V3.2.4 声称已修）。**已联网核对 Gitee 上游 `master`：最新版本就是 V3.2.5（2026-06-27），这几个文件与本地逐字一致**，说明是上游现存问题、没有更新版本可升级。本工程只用 PWMA/PWMC 正交编码器，且只调用一次 `interrupt_set_priority(INT1_IRQn, 3)`（置位方向，可用），这些路径不受影响；若以后启用 TIM 编码器或动态调整优先级，需等上游修复或自行打补丁。
+5. **逐飞库内仍有与 `version.txt` 声明不符的残留问题**（当前配置未触发，故未擅自改第三方 GPL 库）：`zf_driver_encoder.c` 正交编码器清零时"关计数器→写 0→开计数器"两行被注释（V3.1.1/3.1.2 声称已修）、`TIM6/8/10_ENCODER` 清零恢复写成 `|= (1<<3)`（应为 bit7）、`encoder_n & 0x0F + PWMF_ENCODER + 1` 缺括号；`zf_common_interrupt.c` 的 `IP/IPH` 分支用 `|=` 只能调高不能调低、`P8~PB` 分支移位溢出（V3.2.4 声称已修）。**已联网核对 Gitee 上游 `master`：最新版本就是 V3.2.5（2026-06-27），这几个文件与本地逐字一致**，说明是上游现存问题、没有更新版本可升级。本工程只用 PWMA/PWMC 正交编码器，且库内调用 `interrupt_set_priority(INT1_IRQn, 3)`（置位方向，可用）。2026-11-05 应用层在 `main.c` 新增两次调用：`TIMER1_IRQn, 3` 走 `IP/IPH` 置位方向（0→3，可用），`LCM_DMA_IRQn, 1` 走 `DMA_LCM_CFG` 的先清后置分支（可双向设置），**均不受上述 `|=` 缺陷影响**；若以后启用 TIM 编码器或动态调整其它优先级，需等上游修复或自行打补丁。
 6. **摄像头 DMA 是预编译库**：`zf_device_mt9v03x_dma.LIB` 无源码，`version.txt` 中的"修复摄像头花屏""采集优化到 3 ms"无法从源码核实。
 7. **元素状态机无超时兜底**：十字/环岛各阶段靠边界计数判据退出，若现场阈值不合适可能长时间停在某阶段；`raceStart()` 会强制复位，但比赛途中没有自动超时回 `FORWARD`。调参时优先用 `ENABLE_CROSS/ENABLE_ROUND` 逐个验证。
 8. **摄像头 DMA 内部参数与上游不一致（未决项）**：本地 `zf_device_mt9v03x.c` 调 `mt9v03x_dma_init(..., 0, 3, 3)`，上游 V3.2.5 是 `..., 2, 3, 3)`，而头文件示例写 `4`。第三个参数 `value` 被官方注释为"内部参数，用户无需关心"，实现只在 `.LIB` 里、无源码，无法判断 0/2/4 的语义，因此**未擅自改回 2**。若实车出现花屏、丢帧或图像错位，优先对比试上游值 `2`（同时确认本地 `.LIB` 与上游版本一致）。
@@ -166,7 +168,7 @@ Program Size: data=107.6  edata+hdata=8192  xdata=56294  const=50701  code=97140
 - 二次开发：**aMaz1ng**
 - 核心功能修复：PR #1（**TBssjq**，`257224f`），见第 10 节。
 
-本仓库整体以 **GPL-3.0** 分发。`libraries/zf_common/zf_common_function.c` 中的 `sqrt_int()` / `atan2_int()` 是本项目二次开发追加的自定义实现（逐飞上游库并不提供），2026-11-05 由 PR #1 修正其 16 位截断与起始位问题；该文件同时被转存为 UTF-8。按 GPL-3.0 第 5(a) 条，修改内容、日期与责任方记录于此及 `NOTICE`。
+本仓库整体以 **GPL-3.0** 分发。`libraries/` 下被修改的源文件有两处：`zf_common/zf_common_function.c` 追加了本项目自定义的 `sqrt_int()` / `atan2_int()` 整数实现（逐飞上游库并不提供），2026-11-05 由 PR #1 修正其 16 位截断与起始位问题，并由 GBK 转存为 UTF-8；`zf_common/zf_common_headfile.h` 第 111~116 行追加了 `Cross.h` / `Image.h` / `LRound.h` / `RRound.h` / `Motor.h` / `Stop.h` 六个应用层头文件引用。按 GPL-3.0 第 5(a) 条，修改内容、日期与责任方记录于此及 `NOTICE`。
 
 | 文件 | 内容 |
 |---|---|
@@ -232,3 +234,23 @@ PR #1 与另一条并行开发分支基于同一份评估报告各自做了修�
 **双缓冲取舍**：采用「搬运移出 ISR」而非 PR #1 保留的「ISR 内搬运 + `frameBusy` 丢帧」。理由是 TIM1 控制中断优先级为最低 0、无法抢占最高优先级 3 的 DMA_LCM，把 22.5 KB 拷贝留在 ISR 里会确定性地推迟电机控制；移到主循环后控制中断可随时抢占，代价是概率性的混帧窗口（见 8.2）。两者都需实车/示波器验证，此处选择优先保证控制周期的确定性。
 
 **注意**：以上整合仅完成静态审读与一致性检查，未在 Keil C251 上编译，也未实车验证；`sqrt_int` 修复后必须按第 7 节重新标定速度参数。
+
+> **后续变更**：本节「搬运移出 ISR」的双缓冲取舍已于同日被第 12 节的稳定优先调整取代 —— 恢复 ISR 内搬运 + `frameBusy` 保证帧原子性，并通过中断优先级调整同时保住控制周期。
+
+## 12. 稳定优先调整（2026-11-05）
+
+明确的取舍原则：**优先保证稳定运行，其次才是速度**。据此重新审视第 11 节的双缓冲方案并做如下调整。
+
+| 项 | 调整前 | 调整后 | 稳定收益 |
+|---|---|---|---|
+| 帧搬运位置 | 主循环，用 `mt9v03x_finish_flag` 触发 | DMA 完成中断内，以 `frameBusy` 门控 | 消除半帧混入；来不及处理时明确丢帧，而不是读到错误赛道 |
+| 控制中断 | TIM1 默认最低 0，无法抢占 DMA | `TIMER1_IRQn = 3`、`LCM_DMA_IRQn = 1` | 5 ms PID 可抢占 22.5 KB 拷贝，帧原子性与控制确定性不再二选一 |
+| 速度 | 8 档 `c5` 最高 520；修复 `sqrt_int` 后弯道限速变大 | 新增 `SAFE_SPEED_CEILING 400` | 只压 1/7/8 三档（520/450/500→400），其余 5 档不动；提速只改一个宏 |
+| 刹车 | 提前量 150 cm | 提前量 200 cm | 多留 50 cm 制动余量，降低冲出停车区概率 |
+| 掉帧 | 无兜底，保持上一拍打角继续跑 | 约 1 s 无新帧 → `raceStopNow()` | 摄像头 / DMA 异常时主动安全停车 |
+
+用户同日对 `Stop.c` 的改动一并保留：刹车脉冲按 `lapPulse × BRAKE_DISTANCE_CM / (LAP_DISTANCE_CM + STOP_OFFSET_CM)` 比例换算，并带参数填错时的 `lapPulse >> 3` 兜底。按当前默认值，`lapPulse = 13000`、`brakePulse = 2000`，刹车段从约 11.0 m 开始（起跑线 12 m）。
+
+**为什么翻转第 11 节的决定**：原方案为换取控制周期确定性而容忍概率性混帧，且混帧窗口恰好落在起点搜索（第 118 行）与阈值采样（92~113 行）所在的关键区——错误输入比可测的时序抖动更危险。而 `LCM_DMA_IRQn` 的优先级寄存器 `DMA_LCM_CFG` 可双向设置、`TIMER1_IRQn` 的 `IP/IPH` 可置位到 3，硬件上允许同时拿到帧原子性与控制抢占，因此原本的"二选一"并不成立。
+
+**验证状态**：以上均为静态审读 + 一致性检查，**未在 Keil C251 实编译、未实车验证**。烧录前必须：① Rebuild；② 用 IO 翻转确认 C251 高优先级中断确实能抢占 DMA ISR，并实测 5 ms 控制周期抖动与有效帧率；③ 按第 7 节重新标定速度与刹车参数。若现场出现频繁丢帧，优先调低 `SAFE_SPEED_CEILING` 或削减帧内计算量，**不要回退帧原子性**。

@@ -6,6 +6,12 @@
 #define SEEKFREE_STC32G144K_100PIN_OPENSOURCE_LIBRARY_MOTOR_H
 #include "zf_common_headfile.h"
 #define DEBUG_MODE 0
+
+/* 稳定优先：全局目标速度天花板，单位与 c5 / setSpeed 一致（脉冲 / 5 ms）。
+ * 8 档 c5 中 520 / 450 / 500 三档会被压到该值，其余档位不受影响。
+ * sqrt_int() 修复后弯道限速变大，在实车重新标定前先由这里兜住上限；
+ * 需要提速时只改这一个宏，不必重标 8 组参数。 */
+#define SAFE_SPEED_CEILING 400
 #define FORWARD 114
 #define CROSS 514
 #define R_ROUND 1919

@@ -43,7 +43,9 @@ void raceSetLap(void) {
     // 门槛按预期圈长取一半，避免轻微推车/误按把一圈标定成 0.2m
     if (snap > LAP_PULSE_DEFAULT / 2) {
         lapPulse = snap;
-        brakePulse = snap / 8; // 最后 1/8 圈开始刹车
+        // 提前刹车量按"刹车距离 / 一圈总距离"的比例换算，不依赖 PULSE_PER_METER 的绝对值
+        brakePulse = lapPulse * BRAKE_DISTANCE_CM / (LAP_DISTANCE_CM + STOP_OFFSET_CM);
+        if (brakePulse >= lapPulse) brakePulse = lapPulse >> 3; //参数填错时兜底，避免发车即进刹车段
     }
 }
 
