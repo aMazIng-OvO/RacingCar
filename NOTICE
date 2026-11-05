@@ -1,0 +1,44 @@
+Racing Car C-model — NOTICE
+===========================
+
+本项目（Racing Car C-model version1.0）二次开发作者：aMaz1ng
+原始项目：浙江工商大学 哈夫克自动智能车项目
+
+一、上游组件
+------------
+libraries/ 目录整体来自「逐飞科技 STC32G144K 开源库」（V3.2.5），
+版权归 成都逐飞科技有限公司 所有，以 GNU General Public License v3.0 发布。
+许可证全文见：
+  - LICENSE            （仓库根目录）
+  - libraries/LICENSE
+  - libraries/doc/GPL3_permission_statement.txt
+
+二、相对上游的修改说明
+----------------------
+本仓库未修改 libraries/ 目录下的任何源文件，仅在其之上新增应用层代码。
+从上游模板派生、由本项目维护的文件如下：
+
+  project/user/isr.c
+      - 仅保留中断向量号 0~31 的基础中断，删除逐飞模板中的扩展中断实现
+  project/user/isr_extended_0.c        （新增，内容派生自逐飞 isr 模板）
+  project/user/isr_extended_1.c        （新增，内容派生自逐飞 isr 模板）
+  project/user/isr_extended_vectors.A51（新增，扩展中断向量跳转表）
+  project/user/main.c
+  project/code/Image.c / Image.h
+  project/code/Motor.c / Motor.h
+  project/code/Stop.c / Stop.h         （新增）
+  project/code/Cross.c / Cross.h
+  project/code/LRound.c / LRound.h
+  project/code/RRound.c / RRound.h
+  project/mdk/seekfree.uvproj          （文件列表增加上述新增文件）
+
+主要改动概要：
+  1. C251 中断向量限制（0~31）的工程化处理：扩展中断改用局部编号 + A51 跳转表；
+  2. 图像双缓冲：采集缓冲与算法快照分离，避免 170 fps 下的帧撕裂；
+  3. 新增里程发车/标定/定点停车状态机（Stop.c）；
+  4. 删除原项目的斑马线、障碍块模块与 IPS200 图像叠加调试缓冲（释放 22.5 KB XRAM）。
+
+三、许可证
+----------
+本仓库整体以 GNU General Public License v3.0 分发。
+任何再分发必须保留上述版权声明、LICENSE 全文，并标明所做修改。

@@ -11,8 +11,10 @@
 #define ROUND_EXIT 5
 
 static uint8 ROUND_MODE = ROUND_READY, canStart = 0, canIn = 0, canFinish = 0;
-extern int16 centerLineCount, RUN_MODE, RRoadCount, LRoadCount;
-extern uint8 ALONG, borderIn;
+extern int16 centerLineCount, RUN_MODE;
+extern volatile int16 RRoadCount, LRoadCount;
+extern uint8 ALONG;
+extern volatile uint8 borderIn;
 extern Point centerLine[expRoadCount], RRoad[expRoadCount];
 
 void runLRound(int16 LCorner, int16 RCorner) {

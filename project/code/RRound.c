@@ -12,8 +12,10 @@
 
 static uint8 ROUND_MODE = ROUND_READY, canStart = 0, canIn = 0, canFinish = 0;
 static int8 send_buff[32];
-extern int16 centerLineCount, RUN_MODE, RRoadCount, LRoadCount, currentDuty;
-extern uint8 ALONG, borderIn;
+extern int16 centerLineCount, RUN_MODE, currentDuty;
+extern volatile int16 RRoadCount, LRoadCount;
+extern uint8 ALONG;
+extern volatile uint8 borderIn;
 extern Point centerLine[expRoadCount], LRoad[expRoadCount];
 
 void runRRound(int16 LCorner, int16 RCorner) {

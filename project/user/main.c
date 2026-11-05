@@ -45,9 +45,11 @@
 #define ROUND_FAR_MAX   11    //对侧边界点数量上限
 #define CROSS_MAX       14    //十字判定：两侧边界点数上限
 
-int16 LCorner, RCorner, centerLineCount, RUN_MODE = FORWARD, LRoadCount = expRoadCount, RRoadCount = expRoadCount;
+int16 LCorner, RCorner, centerLineCount, RUN_MODE = FORWARD;
+volatile int16 LRoadCount = expRoadCount, RRoadCount = expRoadCount; //中断里做出界判断，需要 volatile
 static int16 imBtn, borderInTriggerDistance = 25;
-uint8 borderIn, switch1, switch2, ALONG = ALONG_R, topBtn, bottomBtn;
+volatile uint8 borderIn; //主循环写、中断读
+uint8 switch1, switch2, ALONG = ALONG_R, topBtn, bottomBtn;
 Point centerLine[expRoadCount], LRoad[expRoadCount], RRoad[expRoadCount];
 extern int16 currentDuty;
 int16 data i, j, pos;
@@ -76,7 +78,14 @@ void main(void) {
     clock_init(SYSTEM_CLOCK_96M);
     debug_init();
     ips200_init();
-    while (mt9v03x_init());
+    { //摄像头初始化最多重试 10 次；失败则提示并停在安全状态（原写法会无限重试，现场无法判断是摄像头故障）
+        uint8 camRetry = 0;
+        while (mt9v03x_init() && ++camRetry < 10) system_delay_ms(20);
+        if (camRetry >= 10) {
+            ips200_show_string(0, 120, "CAMERA INIT FAIL");
+            while (1) system_delay_ms(100);
+        }
+    }
     gpio_init(IO_PB1, GPI, 0, GPI_PULL_UP);
     gpio_init(IO_PB0, GPI, 0, GPI_PULL_UP);
     gpio_init(IO_P02, GPI, 0, GPI_PULL_UP);
@@ -88,6 +97,7 @@ void main(void) {
         uint16 wait = 0;
         while (!mt9v03x_finish_flag && ++wait < 20000);
     }
+    mt9v03x_frame_snapshot(); //先把第一帧搬进算法缓冲，阈值估计才有数据（搬运已移出 ISR）
     LThreshold = RThreshold = threshold = imageInitThreshold();
     mt9v03x_finish_flag = 0;
     ips200_displayimage03x(&mt9v03x_frame[0][0], MT9V03X_W, MT9V03X_H, 0, 0); //上电显示一帧原始画面，确认摄像头正常
@@ -183,7 +193,7 @@ void main(void) {
     ips200_show_string(0, 140, "TOP   : START");
     ips200_show_string(0, 160, "BOTTOM: SET LAP");
     ips200_show_string(0, 180, "IMAGE : STOP");
-    frameBusy = 0;   // 丢弃选档期间缓存的旧帧，第一拍处理当前画面
+    mt9v03x_finish_flag = 0;   // 丢弃选档期间累积的完成标志，第一拍处理当前画面
     while (1) {
         /* 按键与里程判定不依赖相机帧：摄像头停帧时仍能急停 / 收车 */
         uint8 tBtn = gpio_get_level(IO_P02), bBtn = gpio_get_level(IO_P01), sBtn = gpio_get_level(IO_P32);
@@ -195,7 +205,9 @@ void main(void) {
         imBtn = sBtn;
         raceTask();
 
-        if (frameBusy) {
+        if (mt9v03x_finish_flag) {
+            mt9v03x_finish_flag = 0;
+            mt9v03x_frame_snapshot(); //后台搬运一帧（不放在中断里，避免阻塞 5 ms 控制中断）
             loadRoad();
             if (raceState == RACE_RUNNING || raceState == RACE_BRAKING) {
                 if (ENABLE_CROSS && (RUN_MODE == CROSS ||
@@ -220,7 +232,6 @@ void main(void) {
             } else if (raceState == RACE_IDLE) {
                 raceShow();
             }
-            frameBusy = 0;
         }
         system_delay_ms(2);   // 简单去抖，避免空转主循环高频重复采样按键
     }

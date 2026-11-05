@@ -39,9 +39,12 @@
 ```
 version1.0/
 ├── README.md
+├── LICENSE                          # GPL-3.0 全文
+├── NOTICE                           # 上游来源与修改说明
 ├── .gitignore                       # 排除 out_file 等编译产物
 ├── libraries/                       # 逐飞开源库（GPL-3.0，请勿随意删减）
-│   ├── doc/                         # 版本说明与 GPL 协议
+│   ├── LICENSE                      # GPL-3.0 全文（库文件头引用此文件）
+│   ├── doc/                         # 版本说明与 GPL 许可声明
 │   ├── zf_common/                   # 时钟、中断、数学、字体、typedef
 │   ├── zf_components/               # seekfree_assistant 等组件
 │   ├── zf_device/                   # 摄像头、IPS200、无线串口、IMU 等设备驱动
@@ -100,18 +103,20 @@ Program Size: data=107.6  edata+hdata=8192  xdata=56294  const=50701  code=97140
 
 ```
 摄像头 ──DMA──► mt9v03x_image（采集缓冲，库内固定地址）
-                      │  DMA 完成中断
+                      │  DMA 完成中断：只置位 mt9v03x_finish_flag
                       ▼
-              mt9v03x_frame_snapshot()   ← frameBusy==0 时才搬运
+                主循环：mt9v03x_frame_snapshot()   memcpy 22.5 KB
                       ▼
               mt9v03x_frame（稳定快照，所有算法只读这里）
-                      │  主循环处理完
+                      │
                       ▼
-                  frameBusy = 0
+                loadRoad() → 元素状态机 → 控制量
 ```
 
 - 算法层**一律读 `mt9v03x_frame`**，不要直接读 `mt9v03x_image`（那是 DMA 正在写的缓冲）。
-- 图像算法仍由 `frameBusy` 门控，处理完置 0；`mt9v03x_finish_flag` 只在开机等第一帧时使用。**按键扫描与 `raceTask()` 已移出帧门控**，摄像头停帧时急停/停车判定依然生效；选档结束后会清一次 `frameBusy`，丢弃开机旧帧。
+- 主循环以 `mt9v03x_finish_flag` 为触发条件：清标志 → 搬运一帧 → 处理；开机等第一帧时也会先搬一帧再估阈值。
+- **搬运放在主循环（后台）而不是 DMA 中断里**：TIM1 5 ms 控制中断（默认优先级 0）可以随时抢占主循环，因此 22.5 KB 的拷贝不会推迟电机控制。代价是当搬运耗时超过帧间隔（约 2.9 ms）时，快照底部少量行可能混入下一帧。
+- **按键扫描与 `raceTask()` 在帧门控之外**，摄像头停帧时急停/停车判定依然生效；选档结束后清一次 `mt9v03x_finish_flag`，丢弃开机旧帧。
 - 该方案替代了原来的 `outputImage` 调试缓冲（22.5 KB）。若需要恢复"二值化图/边界叠加"预览，必须把新增缓冲放到 `far` 区，否则会触发 `L107 ADDRESS SPACE OVERFLOW`（16 位 XDATA 只有 64 KB）。
 
 ## 6. 操作方式
@@ -146,9 +151,9 @@ Program Size: data=107.6  edata+hdata=8192  xdata=56294  const=50701  code=97140
 ## 8. 已知限制
 
 1. **参数强耦合于单条赛道**：元素判据以像素点数为单位，换赛道/换摄像头安装高度需重标。
-2. **中断优先级倒置（已知权衡，需实车验证）**：TIM1 5 ms 控制中断未设置优先级（默认最低 0），而 DMA_LCM、INT1(VSYNC)、USB 均为最高优先级 3；`mt9v03x_frame_snapshot()` 又在 DMA_LCM 中断里 `memcpy` 22.5 KB（约 1~3 ms），叠加库内读 FIFO 约 3 ms，控制周期会被整体推迟。联网核对确认：逐飞库 `zf_common_interrupt.c` 注释明确写"0 最低、3 最高"，上游 `zf_device_mt9v03x.c` 同样用 `mt9v03x_dma_init(..., 3, 3)` + `exit_init(INT1_P33, BOTH)` + `interrupt_set_priority(INT1_IRQn, 3)`，STC 官方资料也确认 4 级优先级、高可打断低、同级不抢占 —— 因此**优先级倒置确实存在且是官方库默认行为**，不是本地改动引入。本次审查仍**未改动**这套优先级与搬运位置：把搬运移出 ISR 会带来 DMA 写同时读的撕裂风险，调低 DMA 优先级又可能引起花屏，都需要实车/示波器验证后再动。若实车出现电机抖动，优先考虑给 TIM1 提优先级，并在 PIT 的 5 点出界采样处加帧标志门控。
+2. **快照搬运仍在主循环里做整帧拷贝（残余混帧风险）**：`mt9v03x_frame_snapshot()` 每帧 `memcpy` 22.5 KB，估算 1~3 ms，与 `loadRoad()` 串行占用主循环。它已移出 DMA 完成中断，因此不会再推迟 5 ms 电机控制；但 TIM1 控制中断优先级仍是最低 0、DMA_LCM/INT1(VSYNC) 仍是最高 3，**优先级倒置本身没有消除**，只是拷贝不再发生在高优先级 ISR 里。搬运与"下一帧 DMA 开始写入"之间没有硬同步——帧间隔约 2.9 ms（170 fps，DMA 传输约 3 ms），一旦拷贝耗时超过该间隔，快照末尾的行会被下一帧的开头行覆盖。**受影响区域不能当成无关区域**：`getLStart/getRStart` 从第 118 行向上搜索起点，`imageInitThreshold()` 采样第 92~113 行，都落在图像下半部分。彻底方案是 DMA 双缓冲乒乓（需逐飞 `.LIB` 支持运行时切换目标地址）；在实现之前，建议用 IO 翻转实测单次搬运耗时，并把主循环末尾 `system_delay_ms(2)` 的去抖延时一并计入帧预算。
 3. **去畸变查找表不可现场调整**：`reflection[120][188][2]` 是离线标定产物，摄像头位置或分辨率变化后必须重新生成。
-4. **无版本控制历史**：仓库未纳入 Git 管理，建议先 `git init`（`.gitignore` 已就绪）。
+4. **仓库状态**：已纳入 Git 管理（`main` 分支），`.gitignore` 排除 `project/mdk/out_file/` 等编译产物；`LICENSE`、`NOTICE`、`libraries/LICENSE`、`libraries/doc/GPL3_permission_statement.txt` 已按 GPL-3.0 要求补齐。
 5. **逐飞库内仍有与 `version.txt` 声明不符的残留问题**（当前配置未触发，故未擅自改第三方 GPL 库）：`zf_driver_encoder.c` 正交编码器清零时"关计数器→写 0→开计数器"两行被注释（V3.1.1/3.1.2 声称已修）、`TIM6/8/10_ENCODER` 清零恢复写成 `|= (1<<3)`（应为 bit7）、`encoder_n & 0x0F + PWMF_ENCODER + 1` 缺括号；`zf_common_interrupt.c` 的 `IP/IPH` 分支用 `|=` 只能调高不能调低、`P8~PB` 分支移位溢出（V3.2.4 声称已修）。**已联网核对 Gitee 上游 `master`：最新版本就是 V3.2.5（2026-06-27），这几个文件与本地逐字一致**，说明是上游现存问题、没有更新版本可升级。本工程只用 PWMA/PWMC 正交编码器，且只调用一次 `interrupt_set_priority(INT1_IRQn, 3)`（置位方向，可用），这些路径不受影响；若以后启用 TIM 编码器或动态调整优先级，需等上游修复或自行打补丁。
 6. **摄像头 DMA 是预编译库**：`zf_device_mt9v03x_dma.LIB` 无源码，`version.txt` 中的"修复摄像头花屏""采集优化到 3 ms"无法从源码核实。
 7. **元素状态机无超时兜底**：十字/环岛各阶段靠边界计数判据退出，若现场阈值不合适可能长时间停在某阶段；`raceStart()` 会强制复位，但比赛途中没有自动超时回 `FORWARD`。调参时优先用 `ENABLE_CROSS/ENABLE_ROUND` 逐个验证。
@@ -157,8 +162,20 @@ Program Size: data=107.6  edata+hdata=8192  xdata=56294  const=50701  code=97140
 ## 9. 致谢与许可
 
 - 原始项目：**浙江工商大学 哈夫克自动智能车项目**，本仓库在其基础上完成算法重构、双缓冲改造与工程化整理。
-- 底层驱动：[逐飞科技 STC32G144K 开源库](https://seekfree.taobao.com/)，遵循 **GPL-3.0**，二次分发请保留原有版权声明与 LICENSE。
+- 底层驱动：[逐飞科技 STC32G144K 开源库](https://seekfree.taobao.com/)，遵循 **GPL-3.0**。
 - 二次开发：**aMaz1ng**
+- 核心功能修复：PR #1（**TBssjq**，`257224f`），见第 10 节。
+
+本仓库整体以 **GPL-3.0** 分发。`libraries/zf_common/zf_common_function.c` 中的 `sqrt_int()` / `atan2_int()` 是本项目二次开发追加的自定义实现（逐飞上游库并不提供），2026-11-05 由 PR #1 修正其 16 位截断与起始位问题；该文件同时被转存为 UTF-8。按 GPL-3.0 第 5(a) 条，修改内容、日期与责任方记录于此及 `NOTICE`。
+
+| 文件 | 内容 |
+|---|---|
+| `LICENSE` | GPL-3.0 许可证全文 |
+| `libraries/LICENSE` | 同上（每个逐飞库文件头引用此文件） |
+| `libraries/doc/GPL3_permission_statement.txt` | 逐飞库要求的英文许可声明 |
+| `NOTICE` | 上游来源、修改范围与再分发义务 |
+
+再分发请保留全部版权声明与上述文件，并注明所做修改。
 
 ## 10. 核心功能审查与修复记录（2026-11-05）
 
@@ -196,3 +213,22 @@ Program Size: data=107.6  edata+hdata=8192  xdata=56294  const=50701  code=97140
 联网核对**没有推翻已做的修复**，但新增一个未决项：`mt9v03x_dma_init` 第三个参数本地 `0` vs 上游 `2`（见第 8 节第 8 条）。
 
 **未完成的验证**：Keil C251 实编译（本机无该工具链）、实车标定与路试、DMA 内部参数 0/2 的实画面对比。烧录前请按第 4 节重新 Rebuild，并按第 7 节提示重新标定速度参数。
+
+## 11. 整合记录：PR #1 与本地并行修复（2026-11-05）
+
+PR #1 与另一条并行开发分支基于同一份评估报告各自做了修复，整合时逐文件取舍如下：
+
+| 文件 | 采用 | 说明 |
+|---|---|---|
+| `Cross.c/.h`、`Motor.c/.h`、`Stop.c/.h`、`LRound.c/.h`、`RRound.c/.h`、`Image.c`、`main.c` | PR #1 | 覆盖越界、16 位溢出、状态机/PID 复位、里程撕裂读、按键移出帧门控，比本地版完整 |
+| `zf_common_function.c` | PR #1 | `sqrt_int` 起始位 `1L<<20`→`1L<<30`、`atan2_int` 去掉 `(int)` 截断 |
+| `Image.h`、`isr_extended_0.c` | 本地 | 删除 `frameBusy` 与 ISR 内的整帧搬运 |
+| `main.c`（双缓冲部分） | 本地 | 改用 `mt9v03x_finish_flag` 触发、主循环搬运；同时保留 PR 的按键 / `raceTask()` 门外执行、`system_delay_ms(2)` 去抖、`elementReset()` 与 `loadRoad()` 边界修复 |
+| `main.c` 全局变量 | 本地 | `LRoadCount` / `RRoadCount` / `borderIn` 统一 `volatile`（`Motor.c` / `LRound.c` / `RRound.c` 的 extern 同步修改），PR #1 未覆盖此项 |
+| `main.c` 摄像头初始化 | 本地 | `mt9v03x_init()` 无限重试改为最多 10 次 + 屏幕提示 |
+| `main.c` 文件头 | 修正 | 还原被误写为 `G5NU` 的 `GNU General Public License` 字样 |
+| `README.md` | 合并 | 保留第 10 节审查记录，补齐许可证清单、修正第 8.4 条过时的 Git 描述，并按实际方案重写第 5.2 / 8.2 节 |
+
+**双缓冲取舍**：采用「搬运移出 ISR」而非 PR #1 保留的「ISR 内搬运 + `frameBusy` 丢帧」。理由是 TIM1 控制中断优先级为最低 0、无法抢占最高优先级 3 的 DMA_LCM，把 22.5 KB 拷贝留在 ISR 里会确定性地推迟电机控制；移到主循环后控制中断可随时抢占，代价是概率性的混帧窗口（见 8.2）。两者都需实车/示波器验证，此处选择优先保证控制周期的确定性。
+
+**注意**：以上整合仅完成静态审读与一致性检查，未在 Keil C251 上编译，也未实车验证；`sqrt_int` 修复后必须按第 7 节重新标定速度参数。

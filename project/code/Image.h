@@ -35,8 +35,7 @@ extern int16 LBorderCount, RBorderCount;
 extern Point LBorder[expRoadCount], RBorder[expRoadCount];
 
 /* 双缓冲：mt9v03x_image 由 DMA 直接写入（采集缓冲），mt9v03x_frame 是算法统一读取的稳定快照。
- * 每帧采集完成时由 mt9v03x_frame_snapshot() 搬运一帧，frameBusy 标记该快照是否已被主循环消费。 */
+ * 主循环每帧调用 mt9v03x_frame_snapshot() 搬运一次，算法侧只读 mt9v03x_frame。 */
 extern uint8 mt9v03x_frame[MT9V03X_H][MT9V03X_W];
-extern volatile uint8 frameBusy;
 void mt9v03x_frame_snapshot(void);
 #endif //SEEKFREE_STC32G144K_100PIN_OPENSOURCE_LIBRARY_IMAGE_H

@@ -12,7 +12,8 @@
 volatile int16 encoderL, encoderR, setSpeed = 0, handle = 0, duty = 0;
 const int16 tani[33];
 extern int16 RUN_MODE;
-extern uint8 switch1, borderIn, ALONG;
+extern uint8 switch1, ALONG;
+extern volatile uint8 borderIn;
 static uint8 DEVICE_H = 18;
 volatile int8 slow, stop, smoothStop;
 int16 c1, c2, c3, c4, c5, c6, ct2 = 0, longc = 300, LPWM;
@@ -20,7 +21,7 @@ volatile int16 R, LSetSpeed, RSetSpeed, enableDifSpeed = 1;
 volatile int16 currentSpeed;
 int16 currentDuty;
 extern volatile int32 odometer;
-extern int16 LRoadCount, RRoadCount;
+extern volatile int16 LRoadCount, RRoadCount;
 
 typedef struct {
     int16 Kp;
