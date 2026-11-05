@@ -15,8 +15,8 @@ extern int16 RUN_MODE;
 extern uint8 switch1, ALONG;
 extern volatile uint8 borderIn;
 static uint8 DEVICE_H = 18;
-volatile int8 slow, stop, smoothStop;
-int16 c1, c2, c3, c4, c5, c6, ct2 = 0, longc = 300, LPWM;
+volatile int8 slow, stop;
+int16 c1, c3, c4, c5; //仅保留实际参与运算的整定参数
 volatile int16 R, LSetSpeed, RSetSpeed, enableDifSpeed = 1;
 volatile int16 currentSpeed;
 int16 currentDuty;
@@ -159,13 +159,11 @@ int8 getAimPos() {
     return c3;
 }
 
-void motorInit(int16 c11, int16 c22, int16 c33, int16 c44, int16 c55, int16 c66, int16 c77) {
+void motorInit(int16 c11, int16 c33, int16 c44, int16 c55, int16 c77) {
     c1 = c11;
-    c2 = c22;
     c3 = c33;
     c4 = c44;
     c5 = c55;
-    c6 = c66;
     if (c77 > 0) DEVICE_H = (uint8) c77; //第7参数：纯跟踪等效轴距，传0则保持默认18
     PIDInit(&steerPid, 3,
              c1, 0, 50,

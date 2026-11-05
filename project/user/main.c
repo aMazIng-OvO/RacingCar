@@ -52,7 +52,24 @@ volatile uint8 borderIn; //主循环写、中断读
 uint8 switch1, switch2, ALONG = ALONG_R, topBtn, bottomBtn;
 Point centerLine[expRoadCount], LRoad[expRoadCount], RRoad[expRoadCount];
 extern int16 currentDuty;
-int16 data i, j, pos;
+int16 data i;
+
+/* 8 组整定参数：{舵机增益 c1, 前瞻点序号 c3, 弯道限速系数 c4, 直道限速 c5}
+ * 拨码 SW1/SW2 选择基址（0/2/4/6），TOP 取同组奇数档、BOTTOM 取偶数档 */
+static const int16 speedSet[8][4] = {
+    {260, 26, 4500, 520}, // 1
+    {200, 22, 4000, 300}, // 2
+    {210, 23, 4000, 320}, // 3
+    {220, 23, 4000, 340}, // 4
+    {230, 24, 4000, 360}, // 5
+    {240, 24, 4000, 380}, // 6
+    {250, 25, 4000, 450}, // 7
+    {260, 25, 4000, 500}  // 8
+};
+
+static void applySpeedSet(uint8 idx) {
+    motorInit(speedSet[idx][0], speedSet[idx][1], speedSet[idx][2], speedSet[idx][3], 0);
+}
 
 void loadRoad();
 
@@ -124,7 +141,7 @@ void main(void) {
                 ips200_show_string(0, 130, "SELECT: 1");
                 system_delay_ms(500);
                 system_delay_ms(500);
-                motorInit(260, 1000, 26, 4500, 520, 0, 0);
+                applySpeedSet(0);
                 break;
             }
             if (!bottomBtn) {
@@ -132,7 +149,7 @@ void main(void) {
                 ips200_show_string(0, 160, "SELECT: 2");
                 system_delay_ms(500);
                 system_delay_ms(500);
-                motorInit(200, 800, 22, 4000, 300, 0, 0);
+                applySpeedSet(1);
                 break;
             }
         } else if (switch1 && !switch2) {
@@ -143,7 +160,7 @@ void main(void) {
                 ips200_show_string(0, 130, "SELECT: 3");
                 system_delay_ms(500);
                 system_delay_ms(500);
-                motorInit(210, 900, 23, 4000, 320, 0, 0);
+                applySpeedSet(2);
                 break;
             }
             if (!bottomBtn) {
@@ -151,7 +168,7 @@ void main(void) {
                 ips200_show_string(0, 160, "SELECT: 4");
                 system_delay_ms(500);
                 system_delay_ms(500);
-                motorInit(220, 1000, 23, 4000, 340, 0, 0);
+                applySpeedSet(3);
                 break;
             }
         } else if (!switch1 && switch2) {
@@ -162,7 +179,7 @@ void main(void) {
                 ips200_show_string(0, 130, "SELECT: 5");
                 system_delay_ms(500);
                 system_delay_ms(500);
-                motorInit(230, 1000, 24, 4000, 360, 0, 0);
+                applySpeedSet(4);
                 break;
             }
             if (!bottomBtn) {
@@ -170,7 +187,7 @@ void main(void) {
                 ips200_show_string(0, 160, "SELECT: 6");
                 system_delay_ms(500);
                 system_delay_ms(500);
-                motorInit(240, 1000, 24, 4000, 380, 0, 0);
+                applySpeedSet(5);
                 break;
             }
         } else {
@@ -181,7 +198,7 @@ void main(void) {
                 ips200_show_string(0, 130, "SELECT: 7");
                 system_delay_ms(500);
                 system_delay_ms(500);
-                motorInit(250, 1000, 25, 4000, 450, 0, 0);
+                applySpeedSet(6);
                 break;
             }
             if (!bottomBtn) {
@@ -189,7 +206,7 @@ void main(void) {
                 ips200_show_string(0, 160, "SELECT: 8");
                 system_delay_ms(500);
                 system_delay_ms(500);
-                motorInit(260, 1000, 25, 4000, 500, 0, 0);
+                applySpeedSet(7);
                 break;
             }
         }
@@ -255,8 +272,8 @@ void loadRoad() {
     Point LStart = getLStart(), RStart = getRStart();
     if (RUN_MODE == FORWARD) centerLineDistance = 18; //普通循迹恢复默认补线偏移
     LRoadCount = expRoadCount, RRoadCount = expRoadCount;
-    getLBorder(LRoad, LStart, &LRoadCount, 0);
-    getRBorder(RRoad, RStart, &RRoadCount, 0);
+    getLBorder(LRoad, LStart, &LRoadCount);
+    getRBorder(RRoad, RStart, &RRoadCount);
     LBorderCount = func_limit_ab(LRoadCount, 0, expRoadCount);
     memcpy(LBorder, LRoad, LBorderCount * sizeof(Point));
     RBorderCount = func_limit_ab(RRoadCount, 0, expRoadCount);

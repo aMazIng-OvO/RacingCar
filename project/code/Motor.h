@@ -20,7 +20,7 @@
 #define ALONG_R 99
 
 volatile extern int16 setSpeed, handle, encoderL, encoderR;
-void motorInit(int16 c11, int16 c22, int16 c33, int16 c44, int16 c55, int16 c66, int16 c77);
+void motorInit(int16 c11, int16 c33, int16 c44, int16 c55, int16 c77);
 void setServoDuty(int8 duty);
 void alongLine(Point roadLine[], int16 count, int16 aimPos);
 int8 getAimPos();

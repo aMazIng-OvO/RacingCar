@@ -135,10 +135,10 @@ Program Size: data=107.6  edata+hdata=8192  xdata=56294  const=50701  code=97140
 | 参数 | 位置 | 说明 |
 |---|---|---|
 | 舵机中值 / 舵机频率 | `Motor.c` `steerMid` / `pwm_init(..., 200, ...)` | 200 Hz 对应中值 2975；改 50 Hz 时中值需改为 750 |
-| 等效轴距 | `Motor.c` `DEVICE_H`（默认 18，可由第 7 个参数覆盖） | 纯跟踪用，影响整体打角幅度 |
+| 等效轴距 | `Motor.c` `DEVICE_H`（默认 18，可由 `motorInit()` 第 5 个参数覆盖） | 纯跟踪用，影响整体打角幅度 |
 | 转向/速度 PID | `Motor.c` `PIDInit(...)` | 转向 `Kp=c1, Kd=50`；速度 `3000/50/50` |
 | 差速系数 | `Motor.c` `setSpeed * 8 / R` | 弯道内轮打滑就调小 |
-| 8 组预置参数 | `main.c` 各档 `motorInit(...)` | 依次为：舵机增益、未用、前瞻点序号、弯道系数、直道限速、未用、等效轴距 |
+| 8 组预置参数 | `main.c` 的 `speedSet[8][4]` 表 | 每行依次为：舵机增益 c1、前瞻点序号 c3、弯道限速系数 c4、直道限速 c5 |
 | 元素开关 | `main.c` `ENABLE_CROSS` / `ENABLE_ROUND` | 先关掉跑通纯循迹再逐个打开 |
 | 元素阈值 | `main.c` `ROUND_ROW / ROUND_NEAR_X / ROUND_FAR_MAX / CROSS_MAX` | 按画面点数标定 |
 | 图像阈值与边缘 | `Image.h` `block/cap/EDGE_DIFF/EDGE_RATIO/HIDE_ROW/CORNER_COS100` | 蓝底白赛道现场标定 |

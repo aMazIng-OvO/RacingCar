@@ -18,8 +18,8 @@
 #define HIDE_COL_R 140        //遮挡区右列
 #define CORNER_COS100 50      //拐点判定：cos阈值×100，越小越容易出拐点
 
-void getLBorder(Point LRoad[], Point start, int16 *count, int8 delicate);
-void getRBorder(Point RRoad[], Point start, int16 *count, int8 delicate);
+void getLBorder(Point LRoad[], Point start, int16 *count);
+void getRBorder(Point RRoad[], Point start, int16 *count);
 void getCenterLineByLBorder(Point roadLine[], Point centerLine[], int16 count);
 void getCenterLineByRBorder(Point roadLine[], Point centerLine[], int16 count);
 void filterRoad(Point rodeLine[], int16 count);
