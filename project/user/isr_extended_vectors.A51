@@ -1,0 +1,93 @@
+;---------------------------------------------------------------------------------------------------------------------
+; STC32G144K 扩展中断向量跳转表
+;
+; C251 的 C 中断属性只支持编号 0~31，而芯片扩展中断的向量号是 37~126。
+; isr_extended_0.c / isr_extended_1.c 中的中断服务函数使用局部编号（0~31）定义，
+; 由本文件在各真实向量地址上放置 3 字节远跳转，转到对应的服务函数。
+;
+; 向量地址 = 3 + 8 * 向量号，与 stc32g144k246.h 中 Interrupt Vector 注释一致。
+;---------------------------------------------------------------------------------------------------------------------
+NAME ISR_EXTENDED_VECTORS
+
+EXTRN ECODE (P0_IRQHandler?)
+EXTRN ECODE (P1_IRQHandler?)
+EXTRN ECODE (P2_IRQHandler?)
+EXTRN ECODE (P3_IRQHandler?)
+EXTRN ECODE (P4_IRQHandler?)
+EXTRN ECODE (P5_IRQHandler?)
+EXTRN ECODE (P6_IRQHandler?)
+EXTRN ECODE (P7_IRQHandler?)
+EXTRN ECODE (P8_IRQHandler?)
+EXTRN ECODE (P9_IRQHandler?)
+EXTRN ECODE (DMA_UART1_IRQHandler?)
+EXTRN ECODE (DMA_UART2_IRQHandler?)
+EXTRN ECODE (DMA_UART3_IRQHandler?)
+EXTRN ECODE (DMA_UART4_IRQHandler?)
+EXTRN ECODE (DMA_LCM_IRQHandler?)
+EXTRN ECODE (TM11_IRQHandler?)
+EXTRN ECODE (DMA_UART5_IRQHandler?)
+EXTRN ECODE (DMA_UART6_IRQHandler?)
+EXTRN ECODE (DMA_UART7_IRQHandler?)
+EXTRN ECODE (DMA_UART8_IRQHandler?)
+EXTRN ECODE (PA_IRQHandler?)
+EXTRN ECODE (PB_IRQHandler?)
+EXTRN ECODE (TM5_TM6_IRQHandler?)
+EXTRN ECODE (TM7_IRQHandler?)
+EXTRN ECODE (TM9_TM10_IRQHandler?)
+EXTRN ECODE (TM17_TM18_IRQHandler?)
+
+CSEG AT 012BH
+EJMP P0_IRQHandler?
+CSEG AT 0133H
+EJMP P1_IRQHandler?
+CSEG AT 013BH
+EJMP P2_IRQHandler?
+CSEG AT 0143H
+EJMP P3_IRQHandler?
+CSEG AT 014BH
+EJMP P4_IRQHandler?
+CSEG AT 0153H
+EJMP P5_IRQHandler?
+CSEG AT 015BH
+EJMP P6_IRQHandler?
+CSEG AT 0163H
+EJMP P7_IRQHandler?
+CSEG AT 016BH
+EJMP P8_IRQHandler?
+CSEG AT 0173H
+EJMP P9_IRQHandler?
+CSEG AT 019BH
+EJMP DMA_UART1_IRQHandler?
+CSEG AT 01ABH
+EJMP DMA_UART2_IRQHandler?
+CSEG AT 01BBH
+EJMP DMA_UART3_IRQHandler?
+CSEG AT 01CBH
+EJMP DMA_UART4_IRQHandler?
+CSEG AT 01D3H
+EJMP DMA_LCM_IRQHandler?
+CSEG AT 021BH
+EJMP TM11_IRQHandler?
+
+CSEG AT 029BH
+EJMP DMA_UART5_IRQHandler?
+CSEG AT 02ABH
+EJMP DMA_UART6_IRQHandler?
+CSEG AT 02BBH
+EJMP DMA_UART7_IRQHandler?
+CSEG AT 02CBH
+EJMP DMA_UART8_IRQHandler?
+CSEG AT 02D3H
+EJMP PA_IRQHandler?
+CSEG AT 02DBH
+EJMP PB_IRQHandler?
+CSEG AT 0303H
+EJMP TM5_TM6_IRQHandler?
+CSEG AT 030BH
+EJMP TM7_IRQHandler?
+CSEG AT 0313H
+EJMP TM9_TM10_IRQHandler?
+CSEG AT 031BH
+EJMP TM17_TM18_IRQHandler?
+
+END
