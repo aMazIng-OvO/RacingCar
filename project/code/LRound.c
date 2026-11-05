@@ -66,3 +66,9 @@ void runLRound(int16 LCorner, int16 RCorner) {
         }
     }
 }
+
+void lroundReset(void) {
+    ROUND_MODE = ROUND_READY;
+    canStart = canIn = canFinish = 0;
+    centerLineDistance = 18;
+}

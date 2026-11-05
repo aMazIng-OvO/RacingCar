@@ -18,6 +18,7 @@ void motorInit(int16 c11, int16 c22, int16 c33, int16 c44, int16 c55, int16 c66,
 void setServoDuty(int8 duty);
 void alongLine(Point roadLine[], int16 count, int16 aimPos);
 int8 getAimPos();
-extern int16 enableDifSpeed, currentSpeed;
-extern int8 stop;
+void controlReset(void);      // 发车/急停时清空 PID 历史与控制量
+extern volatile int16 enableDifSpeed, currentSpeed;
+extern volatile int8 stop;
 #endif //SEEKFREE_STC32G144K_100PIN_OPENSOURCE_LIBRARY_MOTOR_H

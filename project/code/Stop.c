@@ -6,48 +6,70 @@
 
 volatile int32 odometer = 0;
 int32 lapPulse = LAP_PULSE_DEFAULT, brakePulse = BRAKE_PULSE_DEFAULT;
-uint8 raceState = RACE_IDLE;
+volatile uint8 raceState = RACE_IDLE;
 
 void stopInit(void) {
+    elementReset();
+    interrupt_global_disable();
     odometer = 0;
+    interrupt_global_enable();
     lapPulse = LAP_PULSE_DEFAULT;
     brakePulse = BRAKE_PULSE_DEFAULT;
     raceState = RACE_IDLE;
 }
 
 void raceStart(void) {
+    // 先复位全部元素/控制状态，最后才解除 stop，
+    // 避免 PIT 在 stop=0 与 raceState=RUNNING 之间的窗口用旧目标驱动
+    elementReset();
+    interrupt_global_disable();
     odometer = 0;
-    stop = 0;
+    interrupt_global_enable();
     handle = 0;
     enableDifSpeed = 1;
     gpio_set_level(IO_P90, 0);
     raceState = RACE_RUNNING;
+    stop = 0;
 }
 
 void raceSetLap(void) {
+    int32 snap;
     // 推车从起跑线走完一圈、再前进到需要的停车点（约 1m 处）后按 BOTTOM 键
-    if (odometer > 200) { // 里程过小视为误操作
-        lapPulse = odometer;
-        brakePulse = odometer / 8; // 最后 1/8 圈开始刹车
-    }
+    // 32 位里程由 PIT 读改写，必须一次性取快照后再清零
+    interrupt_global_disable();
+    snap = odometer;
     odometer = 0;
+    interrupt_global_enable();
+    // 门槛按预期圈长取一半，避免轻微推车/误按把一圈标定成 0.2m
+    if (snap > LAP_PULSE_DEFAULT / 2) {
+        lapPulse = snap;
+        brakePulse = snap / 8; // 最后 1/8 圈开始刹车
+    }
 }
 
 void raceStopNow(void) {
+    elementReset();          // 急停后同样复位元素/控制状态，发车时不会带旧阶段
     stop = 1;
     raceState = RACE_STOPPED;
     gpio_set_level(IO_P90, 1); // 蜂鸣器提示已停车
 }
 
 void raceTask(void) {
-    if (raceState == RACE_RUNNING) {
-        if (odometer >= lapPulse - brakePulse) {
-            raceState = RACE_BRAKING;
-            handle = 1;   // 锁定速度，避免曲率限速重新拉高 setSpeed
-            setSpeed = 0; // 电机 PID 目标 0，主动制动
-        }
-    } else if (raceState == RACE_BRAKING) {
-        if (odometer >= lapPulse || func_abs(currentSpeed) < 30) {
+    int32 snap;
+    interrupt_global_disable();
+    snap = odometer;
+    interrupt_global_enable();
+    if (raceState == RACE_RUNNING && snap >= lapPulse - brakePulse) {
+        raceState = RACE_BRAKING;
+    }
+    if (raceState == RACE_BRAKING) {
+        // 每帧重新压住制动目标，防止 PIT/元素逻辑把 setSpeed 抬回去
+        handle = 1;
+        setSpeed = 0;
+        // 低速只在已进入停车点附近时才允许提前收车，避免刹车段起点误停
+        if (snap >= lapPulse ||
+            (snap >= lapPulse - brakePulse / 4 && func_abs(currentSpeed) < 30)) {
+            elementReset();   // 完赛停车也复位元素/控制状态
             raceState = RACE_STOPPED;
             stop = 1;
             gpio_set_level(IO_P90, 1);
@@ -56,8 +78,12 @@ void raceTask(void) {
 }
 
 void raceShow(void) {
+    int32 snap;
+    interrupt_global_disable();
+    snap = odometer;
+    interrupt_global_enable();
     ips200_show_string(0, 200, "ODO:");
-    ips200_show_int32(64, 200, odometer, 10);
+    ips200_show_int32(64, 200, snap, 10);
     ips200_show_string(0, 220, "LAP:");
     ips200_show_int32(64, 220, lapPulse, 10);
     ips200_show_string(0, 240, "THR:");

@@ -30,6 +30,8 @@ void mt9v03x_frame_snapshot(void) {
 }
 
 uint8 getImagePointFilterSelf(uint8 i, uint8 j) {
+    // 十字补线起点可能来自未命中的边界扫描，必须先挡住越界读
+    if (i >= MT9V03X_H || j >= MT9V03X_W) return 0;
     if (i > HIDE_ROW && j >= HIDE_COL_L && j <= HIDE_COL_R) return 255;
     return mt9v03x_frame[i][j];
 }
@@ -135,16 +137,18 @@ void getLBorder(Point LRoad[], Point start, int16 *count, int8 delicate) {
     dir = 0, data
     up = 0, data
     localThreshold;
-    uint16 data
-    step = 0, tempThreshold;
+    int16 data
+    step = 0, tempThreshold, limit;
     //起点无效（(0,0)）时必须先返回，不能再拿它去取局部阈值
     if (start.x == 0 && start.y == 0) {
         *count = 0;
         return;
     }
+    // 写入点数硬夹在数组容量内：调用方误传负 count 时不会越界写 LRoad[]
+    limit = func_limit_ab(*count, 0, expRoadCount);
     tempThreshold = localThreshold = getPointThreshold(x, y);
     if (delicate) {
-        while (x > halfBlock + 1 && x < MT9V03X_H - halfBlock - 1 && y > halfBlock + 1 && y < MT9V03X_W - halfBlock - 1 && step < *count &&
+        while (x > halfBlock + 1 && x < MT9V03X_H - halfBlock - 1 && y > halfBlock + 1 && y < MT9V03X_W - halfBlock - 1 && step < limit &&
            turn < 4) {
             up++;
             if (up == 2) {
@@ -173,7 +177,7 @@ void getLBorder(Point LRoad[], Point start, int16 *count, int8 delicate) {
             if (x == start.x && y == start.y && !turn) break;
         }
     } else {
-        while (x > halfBlock + 1 && x < MT9V03X_H - halfBlock - 1 && y > halfBlock + 1 && y < MT9V03X_W - halfBlock - 1 && step < *count &&
+        while (x > halfBlock + 1 && x < MT9V03X_H - halfBlock - 1 && y > halfBlock + 1 && y < MT9V03X_W - halfBlock - 1 && step < limit &&
                turn < 4) {
             up++;
             if (up == 2) {
@@ -206,7 +210,9 @@ void getLBorder(Point LRoad[], Point start, int16 *count, int8 delicate) {
     if (step > 25 && !banUpdateThreshold) {
         LThreshold = (int16) tempThreshold + (int16) LThreshold >> 1;
         threshold = (int16) LThreshold + (int16) RThreshold >> 1;
-    } else banUpdateThreshold = 0;
+    }
+    // 阈值冻结标志由 crossReset()/elementReset() 统一解除，爬线函数不再自己清，
+    // 否则同帧的 getLBorder 清掉后 getRBorder 又会更新，十字期间冻结失效
 }
 
 void getRBorder(Point RRoad[], Point start, int16 *count, int8 delicate) {
@@ -218,15 +224,16 @@ void getRBorder(Point RRoad[], Point start, int16 *count, int8 delicate) {
     up = 0, data
     localThreshold;
     int16 data
-    step = 0, tempThreshold;
+    step = 0, tempThreshold, limit;
     //起点无效（(0,0)）时必须先返回，不能再拿它去取局部阈值
     if (start.x == 0 && start.y == 0) {
         *count = 0;
         return;
     }
+    limit = func_limit_ab(*count, 0, expRoadCount);
     tempThreshold = localThreshold = getPointThreshold(x, y);
     if (delicate) {
-        while (x > halfBlock + 1 && x < 119 - halfBlock && y > halfBlock + 1 && y < 187 - halfBlock && step < *count &&
+        while (x > halfBlock + 1 && x < 119 - halfBlock && y > halfBlock + 1 && y < 187 - halfBlock && step < limit &&
                turn < 4) {
             up++;
             if (up == 2) {
@@ -255,7 +262,7 @@ void getRBorder(Point RRoad[], Point start, int16 *count, int8 delicate) {
             if (x == start.x && y == start.y && !turn) break;
         }
     } else {
-        while (x > halfBlock + 1 && x < 119 - halfBlock && y > halfBlock + 1 && y < 187 - halfBlock && step < *count &&
+        while (x > halfBlock + 1 && x < 119 - halfBlock && y > halfBlock + 1 && y < 187 - halfBlock && step < limit &&
                turn < 4) {
             up++;
             if (up == 2) {
@@ -288,7 +295,9 @@ void getRBorder(Point RRoad[], Point start, int16 *count, int8 delicate) {
     if (step > 25 && !banUpdateThreshold) {
         RThreshold = (int16) tempThreshold + (int16) RThreshold >> 1;
         threshold = (int16) LThreshold + (int16) RThreshold >> 1;
-    } else banUpdateThreshold = 0;
+    }
+    // 阈值冻结标志由 crossReset()/elementReset() 统一解除，爬线函数不再自己清，
+    // 否则同帧的 getLBorder 清掉后 getRBorder 又会更新，十字期间冻结失效
 }
 
 void getCenterLineByLBorder(Point roadLine[], Point centerLine[], int16 count) {
@@ -299,13 +308,17 @@ void getCenterLineByLBorder(Point roadLine[], Point centerLine[], int16 count) {
     dn, data
     idx1, data
     idx2;
+    if (count <= 0) return;
+    if (count > expRoadCount) count = expRoadCount;
+    centerLine[0] = roadLine[0];   // 每帧刷新首点，避免 filterRoad 拿上一帧残留做种子
     for (i = 1; i < count; i++) {
         int32 center_x, center_y;
         idx1 = func_limit_ab(i - 2, 0, count - 1);
         idx2 = func_limit_ab(i + 2, 0, count - 1);
         dx = roadLine[idx2].x - roadLine[idx1].x;
         dy = roadLine[idx2].y - roadLine[idx1].y;
-        dn = sqrt_int(dx * dx + dy * dy);
+        // C251 的 int 为 16 位：dy² 可达 187² > 32767，必须先提升到 int32
+        dn = (int16) sqrt_int((int32) dx * dx + (int32) dy * dy);
         if (!dn) continue;
         center_x = roadLine[i].x + (dy * centerLineDistance) / dn;
         center_y = roadLine[i].y - (dx * centerLineDistance) / dn;
@@ -322,13 +335,16 @@ void getCenterLineByRBorder(Point roadLine[], Point centerLine[], int16 count) {
     dn, data
     idx1, data
     idx2;
+    if (count <= 0) return;
+    if (count > expRoadCount) count = expRoadCount;
+    centerLine[0] = roadLine[0];
     for (i = 1; i < count; i++) {
         int32 center_x, center_y;
         idx1 = func_limit_ab(i - 2, 0, count - 1);
         idx2 = func_limit_ab(i + 2, 0, count - 1);
         dx = roadLine[idx2].x - roadLine[idx1].x;
         dy = roadLine[idx2].y - roadLine[idx1].y;
-        dn = sqrt_int(dx * dx + dy * dy);
+        dn = (int16) sqrt_int((int32) dx * dx + (int32) dy * dy);
         if (!dn) continue;
         center_x = roadLine[i].x - (dy * centerLineDistance) / dn;
         center_y = roadLine[i].y + (dx * centerLineDistance) / dn;
@@ -339,20 +355,26 @@ void getCenterLineByRBorder(Point roadLine[], Point centerLine[], int16 count) {
 
 void filterRoad(Point rodeLine[], int16 count) {
     int16 data
-    i;
-    for (i = 1; i < count; i++) {
-        rodeLine[i].x = func_limit_ab((rodeLine[i - 1].x >> 1) + (rodeLine[i].x >> 1), 0, MT9V03X_H - 1);
-        rodeLine[i].y = func_limit_ab((rodeLine[i - 1].y >> 1) + (rodeLine[i].y >> 1), 0, MT9V03X_W - 1);
+    i, data sx, data sy;
+    for (i = 1; i < count && i < expRoadCount; i++) {
+        // 先加后移，避免 (a>>1)+(b>>1) 在两奇数时系统性少 1 个像素
+        sx = (int16) rodeLine[i - 1].x + (int16) rodeLine[i].x + 1;
+        sy = (int16) rodeLine[i - 1].y + (int16) rodeLine[i].y + 1;
+        rodeLine[i].x = func_limit_ab(sx >> 1, 0, MT9V03X_H - 1);
+        rodeLine[i].y = func_limit_ab(sy >> 1, 0, MT9V03X_W - 1);
     }
 }
 
 void getGodRoadLine(Point roadLine[], int16 count) {
     int16 data i;
-    uint8 data t;
-    for (i = 0; i < count; i++) {
-        t = roadLine[i].x;
-        roadLine[i].x = reflection[roadLine[i].x][roadLine[i].y][0];
-        roadLine[i].y = reflection[t][roadLine[i].y][1];
+    uint8 data px, data py;
+    for (i = 0; i < count && i < expRoadCount; i++) {
+        px = roadLine[i].x;
+        py = roadLine[i].y;
+        // reflection 只有 [120][188][2]，异常坐标直接跳过而不是越界读 const 区
+        if (px >= MT9V03X_H || py >= MT9V03X_W) continue;
+        roadLine[i].x = reflection[px][py][0];
+        roadLine[i].y = reflection[px][py][1];
     }
 }
 
@@ -362,7 +384,8 @@ void resampleRoad(Point roadLine[], int16 *count, int16 startPos, uint8 dis) {
     Point output[expRoadCount];
     remain = 0;
     step = 0;
-    if (*count <= startPos + 1 || dis == 0) {
+    // 入口夹取：负 startPos、超容量 count 都不能进入下面的索引循环
+    if (startPos < 0 || *count <= 0 || *count > expRoadCount || *count <= startPos + 1 || dis == 0) {
         *count = 0;
         return;
     }
@@ -371,7 +394,7 @@ void resampleRoad(Point roadLine[], int16 *count, int16 startPos, uint8 dis) {
         y0 = roadLine[i].y;
         dx = roadLine[i + 1].x - x0;
         dy = roadLine[i + 1].y - y0;
-        len = sqrt_int(dx * dx + dy * dy);
+        len = (int16) sqrt_int((int32) dx * dx + (int32) dy * dy);
         if (!len)
             continue;
         while (step < expRoadCount) {
@@ -383,7 +406,7 @@ void resampleRoad(Point roadLine[], int16 *count, int16 startPos, uint8 dis) {
             ty = (int32) y0 * len + (int32) dy * remain;
             cx = (int16) (tx / len);
             cy = (int16) (ty / len);
-            output[step].x = func_limit_ab(cx, 0, 199);
+            output[step].x = func_limit_ab(cx, 0, MT9V03X_H - 1);
             output[step].y = func_limit_ab(cy, 0, 187);
             step++;
             remain += dis;
@@ -400,7 +423,8 @@ void resampleRoad(Point roadLine[], int16 *count, int16 startPos, uint8 dis) {
 
 int16 findCorner(Point roadLine[], int16 count, int8 cross) {
     volatile int16 data i;
-    int8 data p = 0, data m, data c = 0;
+    int16 data p = 0, data c = 0;
+    int32 data m = 0;   // 100*abs_dot 远超 int8，原来被截断导致"最尖拐点"分支永不生效
     for (i = 3; i < count - 2 && roadLine[i].x > 20; i++) {
         volatile int32 i_5 = func_limit_ab(i - 5, 0, count - 1), i0 = func_limit_ab(i, 0, count - 1),
         i5 = func_limit_ab(i + (cross ? 5 : 2), 0, count - 1), dx1 = roadLine[i0].x - roadLine[i_5].x,

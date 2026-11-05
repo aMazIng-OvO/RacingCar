@@ -62,11 +62,17 @@ void runRRound(int16 LCorner, int16 RCorner) {
             canFinish = 1;
         else if (RRoadCount > 10 && canFinish) {
             ROUND_MODE = ROUND_READY;
-            handle = 0;
+            // handle 由 raceTask 用于锁定刹车段速度，只在 raceStart 复位，不在这里清
             RUN_MODE = FORWARD;
             canFinish = canStart = canIn = 0;
         }
     }
     // sprintf(send_buff, "duty: %d,%d\n", currentDuty, ROUND_MODE);
     // wireless_uart_send_buffer(send_buff, 32);
+}
+
+void rroundReset(void) {
+    ROUND_MODE = ROUND_READY;
+    canStart = canIn = canFinish = 0;
+    centerLineDistance = 18;
 }

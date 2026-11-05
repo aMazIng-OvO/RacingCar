@@ -8,5 +8,6 @@
 #include "zf_common_headfile.h"
 
 void runRRound(int16 LCorner, int16 RCorner);
+void rroundReset(void);  // 发车/急停时复位右环岛状态机
 
 #endif //SEEKFREE_STC32G144K_100PIN_OPENSOURCE_LIBRARY_RROUND_H

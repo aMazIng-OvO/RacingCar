@@ -30,7 +30,8 @@
 extern volatile int32 odometer;     // 发车后累计里程（脉冲）
 extern int32 lapPulse;              // 一圈总脉冲（含停车余量）
 extern int32 brakePulse;            // 提前刹车脉冲
-extern uint8 raceState;
+extern volatile uint8 raceState;
+extern void elementReset(void);   // 发车/急停时统一复位元素与控制状态（main.c 实现）
 
 void stopInit(void);        // 初始化（选档结束后调用一次）
 void raceStart(void);       // 发车：清里程、解除刹车
