@@ -14,9 +14,11 @@ const int16 tani[33];
 extern int16 RUN_MODE;
 extern uint8 switch1, borderIn, ALONG;
 static uint8 DEVICE_H = 18;
-int8 slow, stop, smoothStop;
-int16 R, c1, c2, c3, c4, c5, c6, LSetSpeed, RSetSpeed, enableDifSpeed = 1, ct2 = 0;
-int16 currentDuty, longc = 300, LPWM, currentSpeed;
+volatile int8 slow, stop, smoothStop;
+int16 c1, c2, c3, c4, c5, c6, ct2 = 0, longc = 300, LPWM;
+volatile int16 R, LSetSpeed, RSetSpeed, enableDifSpeed = 1;
+volatile int16 currentSpeed;
+int16 currentDuty;
 extern volatile int32 odometer;
 extern int16 LRoadCount, RRoadCount;
 
@@ -55,7 +57,7 @@ int16 steerPIDCalculate(PID_t *pid, int16 error) {
 }
 
 int16 motorPIDCalculate(PID_t *pid, int16 target, int16 actual) {
-    int32 err, delta_err, delta_u;
+    int32 err, delta_err, delta_u, base;
     err = target - actual;
     delta_err = err - pid->last_error;
     delta_u = (int32) pid->Kp * delta_err +
@@ -63,37 +65,46 @@ int16 motorPIDCalculate(PID_t *pid, int16 target, int16 actual) {
                  (int32) pid->Kd * (delta_err - (pid->last_error - pid->llast_error));
     pid->llast_error = pid->last_error;
     pid->last_error = err;
-    pid->base += delta_u / 100;
-    pid->base = func_limit(pid->base, pid->max_out);
-    gpio_set_level((gpio_pin_enum) pid->which ? motorDirR : motorDirL, pid->base >= 0);
-    return func_abs(pid->base);
+    // 先在 32 位上累加再限幅；原来 int16 base 先溢出会导致方向翻转和负占空比
+    base = (int32) pid->base + delta_u / 100;
+    base = func_limit(base, pid->max_out);
+    pid->base = (int16) base;
+    gpio_set_level((gpio_pin_enum) pid->which ? motorDirR : motorDirL, base >= 0);
+    return (int16) func_abs(base);
 }
 
 static void pitHandler() {
-    encoderR = -encoder_get_count(PWMA_ENCODER) << 1;
-    encoderL = encoder_get_count(PWMC_ENCODER) << 1;
+    int32 cntR, cntL, avg;
+    // 全程 32 位：C251 的 int 只有 16 位，负数左移与两轮求和都会溢出
+    cntR = -(int32) encoder_get_count(PWMA_ENCODER) * 2;
+    cntL = (int32) encoder_get_count(PWMC_ENCODER) * 2;
     encoder_clear_count(PWMA_ENCODER);
     encoder_clear_count(PWMC_ENCODER);
-    odometer += (int32) ((encoderL + encoderR) >> 1); //里程累计（供停车判定使用）
+    encoderR = (int16) func_limit(cntR, 32767);
+    encoderL = (int16) func_limit(cntL, 32767);
+    avg = (cntR + cntL) / 2;
+    currentSpeed = (int16) func_limit(avg, 32767);
+    odometer += avg;   // IDLE 下同样累加，供推车标定一圈里程
     // 冲出赛道保护：跑车过程中两侧边界全部丢失，或视野内 5 个采样点全暗，判定出界停车
     if (stop || ((raceState == RACE_RUNNING || raceState == RACE_BRAKING) &&
                  ((!LRoadCount && !RRoadCount) ||
                   (mt9v03x_frame[84][95] < threshold && mt9v03x_frame[88][47] < threshold &&
                    mt9v03x_frame[87][141] < threshold && mt9v03x_frame[75][120] < threshold &&
                    mt9v03x_frame[74][64] < threshold)))) {
+        // 出界保护必须与比赛状态同步，否则 raceTask 永远等不到里程且 TOP 键无法恢复
+        if (!stop && (raceState == RACE_RUNNING || raceState == RACE_BRAKING))
+            raceState = RACE_STOPPED;
         stop = 1;
         pwm_set_duty(PWME_CH3P_PA4, steerMid);
         pwm_set_duty(motorPwmR, motorPIDCalculate(&motorRPID, 0, encoderR));
         pwm_set_duty(motorPwmL, motorPIDCalculate(&motorLPID, 0, encoderL));
     } else {
         pwm_set_duty(PWME_CH3P_PA4, steerMid + steerPIDCalculate(&steerPid, duty));
-        currentSpeed = encoderR + encoderL >> 1;
-        slow = !borderIn ? 1 : currentSpeed < 350 ? 0 : slow;
-        if (borderIn && currentSpeed > 420 && slow) setSpeed = 200;
+        slow = !borderIn ? 1 : (currentSpeed < 350 ? 0 : slow);
+        // 刹车段速度由 raceTask 锁定，环岛入弯减速不能把它抬回去
+        if (!handle && raceState == RACE_RUNNING && borderIn && currentSpeed > 420 && slow) setSpeed = 200;
         RSetSpeed = setSpeed + (!R || !enableDifSpeed ? 0 : setSpeed * 8 / R);
         LSetSpeed = setSpeed - (!R || !enableDifSpeed ? 0 : setSpeed * 8 / R);
-        // if (longc > 150) RSetSpeed = LSetSpeed = c4;
-        // else RSetSpeed = LSetSpeed = c5;
         pwm_set_duty(motorPwmR, motorPIDCalculate(&motorRPID, RSetSpeed, encoderR));
         pwm_set_duty(motorPwmL, motorPIDCalculate(&motorLPID, LSetSpeed, encoderL));
     }
@@ -101,12 +112,17 @@ static void pitHandler() {
 
 void alongLine(Point roadLine[], int16 count, int16 aimPos) {
     int16 pos, dx, dy;
+    int32 ax, ay;
     int8 d;
     if (count <= 5) return;
     pos = func_limit_ab(aimPos, 5, count - 2);
     dx = MT9V03X_H - roadLine[pos].x + DEVICE_H;
     dy = 94 - roadLine[pos].y;
-    d = atan2_int(2 * DEVICE_H * dy, dx * dx + dy * dy);
+    // 16 位平方会溢出；dx=dy=0 时 atan2 会打满舵，这里直接保持上一拍打角
+    ay = (int32) 2 * DEVICE_H * dy;
+    ax = (int32) dx * dx + (int32) dy * dy;
+    if (ax <= 0) return;
+    d = (int8) atan2_int(ay, ax);
 #if (DEBUG_MODE)
     if (switch1)
         ips200_draw_point(roadLine[pos].y, roadLine[pos].x + MT9V03X_H + 40, RGB565_RED);
@@ -116,6 +132,7 @@ void alongLine(Point roadLine[], int16 count, int16 aimPos) {
 
 void setServoDuty(int8 d) {
     int16 data t, r, ts;
+    int32 data v;
     currentDuty = (int16) d * c1 / 100;
     t = tani[func_limit_ab(func_abs(currentDuty), 0, 32)];
 #if (DEBUG_MODE)
@@ -125,8 +142,11 @@ void setServoDuty(int8 d) {
     // if (borderIn) ts = func_min(c5, 400);
     // else ts = c5;
     ts = c5;
-    if (!handle)
-        setSpeed = !r ? ts : func_min(sqrt_int(r * (uint32) c4), ts);
+    // c4 是有符号标定参数，不能用 uint32 强转；sqrt_int 已支持 int32 全域。
+    // 刹车段由 raceTask 锁定目标，这里不再按曲率重新抬高速度
+    v = sqrt_int((int32) r * (int32) c4);
+    if (!handle && raceState != RACE_BRAKING && c4 > 0)
+        setSpeed = !r ? ts : (int16) func_min(v, (int32) ts);
     R = d < 0 ? -r : r;
     duty = (int16) d * 12;
 }
@@ -167,3 +187,14 @@ const int16 tani[33] = {0,
                         17,  35,  52,  70,  87,  105, 123, 141, 158, 176,
                         194, 213, 231, 249, 268, 287, 306, 325, 344, 364,
                         384, 404, 424, 445, 466, 488, 510, 532, 554, 577, 600, 628};
+
+void controlReset(void) {
+    // 发车/急停时清空 PID 历史，避免上一次的积分与误差继续作用
+    steerPid.base = steerPid.last_error = steerPid.llast_error = 0;
+    motorLPID.base = motorLPID.last_error = motorLPID.llast_error = 0;
+    motorRPID.base = motorRPID.last_error = motorRPID.llast_error = 0;
+    setSpeed = duty = handle = 0;
+    R = currentSpeed = currentDuty = 0;
+    slow = 0;
+    enableDifSpeed = 1;
+}

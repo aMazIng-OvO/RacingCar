@@ -86,19 +86,24 @@ int32 atan2_int(int32 y, int32 x) {
         37837
 };
     int32 sign = (y >= 0) ? 1 : -1, ay = (y >= 0) ? y : -y, d = 29, lhs, rhs;
-    if (ay == 0) return 0;
-    lhs = (int)ay * 65536;
-    rhs = (int)x * tan_table[30];
+    if (ay == 0 || x <= 0) return 0;
+    // C251 的 int 为 16 位，原来的 (int) 强转会截掉 int32 入参的高 16 位；
+    // 全程用 32 位运算，且 x<=0 时不再返回打满舵的 sign*30
+    lhs = ay * 65536L;
+    rhs = x * tan_table[30];
     if (lhs >= rhs) return sign * 30;
     while (d >= 0) {
-        if (lhs >= (int)x * tan_table[d]) break;
+        if (lhs >= x * tan_table[d]) break;
         d--;
     }
     return sign * d;
 }
 
 int32 sqrt_int(int32 x) {
-    int32 res = 0, Bi = 1L << 20;
+    // 起始位必须覆盖 int32 正数域：原来 1L<<20 只支持 x<=1048576，
+    // 弯道限速 sqrt(R*c4) 可达 5e6，会得到偏小的错误平方根。
+    // 对 x<=1048576 的输入，while 收敛到同一个 4 的幂，结果不变。
+    int32 res = 0, Bi = 1L << 30;
     if (x <= 0) return 0;
     while (Bi > x) Bi >>= 2;
     while (Bi) {

@@ -49,11 +49,28 @@ int16 LCorner, RCorner, centerLineCount, RUN_MODE = FORWARD, LRoadCount = expRoa
 static int16 imBtn, borderInTriggerDistance = 25;
 uint8 borderIn, switch1, switch2, ALONG = ALONG_R, topBtn, bottomBtn;
 Point centerLine[expRoadCount], LRoad[expRoadCount], RRoad[expRoadCount];
-static uint8 findBorderIn;
 extern int16 currentDuty;
 int16 data i, j, pos;
 
 void loadRoad();
+
+/* 发车/急停时统一复位：元素状态机、补线偏移、控制量与比赛相关全局量。
+ * 只在 main.c 实现，由 Stop.c 的 raceStart()/stopInit() 调用。 */
+void elementReset(void) {
+    crossReset();
+    lroundReset();
+    rroundReset();
+    controlReset();
+    RUN_MODE = FORWARD;
+    ALONG = ALONG_R;
+    borderIn = 0;
+    centerLineDistance = 18;
+    banUpdateThreshold = 0;
+    centerLineCount = 0;
+    LCorner = RCorner = 0;
+    LRoadCount = RRoadCount = expRoadCount;
+    gpio_set_level(IO_P90, 0);
+}
 
 void main(void) {
     clock_init(SYSTEM_CLOCK_96M);
@@ -166,17 +183,19 @@ void main(void) {
     ips200_show_string(0, 140, "TOP   : START");
     ips200_show_string(0, 160, "BOTTOM: SET LAP");
     ips200_show_string(0, 180, "IMAGE : STOP");
+    frameBusy = 0;   // 丢弃选档期间缓存的旧帧，第一拍处理当前画面
     while (1) {
-        if (frameBusy) {
-            /* ---- 按键：上升沿触发 ---- */
-            uint8 tBtn = gpio_get_level(IO_P02), bBtn = gpio_get_level(IO_P01), sBtn = gpio_get_level(IO_P32);
-            if (topBtn && !tBtn && (raceState == RACE_IDLE || raceState == RACE_STOPPED)) raceStart();
-            if (bottomBtn && !bBtn && raceState == RACE_IDLE) raceSetLap();
-            if (imBtn && !sBtn && (raceState == RACE_RUNNING || raceState == RACE_BRAKING)) raceStopNow();
-            topBtn = tBtn;
-            bottomBtn = bBtn;
-            imBtn = sBtn;
+        /* 按键与里程判定不依赖相机帧：摄像头停帧时仍能急停 / 收车 */
+        uint8 tBtn = gpio_get_level(IO_P02), bBtn = gpio_get_level(IO_P01), sBtn = gpio_get_level(IO_P32);
+        if (topBtn && !tBtn && (raceState == RACE_IDLE || raceState == RACE_STOPPED)) raceStart();
+        if (bottomBtn && !bBtn && raceState == RACE_IDLE) raceSetLap();
+        if (imBtn && !sBtn && (raceState == RACE_RUNNING || raceState == RACE_BRAKING)) raceStopNow();
+        topBtn = tBtn;
+        bottomBtn = bBtn;
+        imBtn = sBtn;
+        raceTask();
 
+        if (frameBusy) {
             loadRoad();
             if (raceState == RACE_RUNNING || raceState == RACE_BRAKING) {
                 if (ENABLE_CROSS && (RUN_MODE == CROSS ||
@@ -201,21 +220,23 @@ void main(void) {
             } else if (raceState == RACE_IDLE) {
                 raceShow();
             }
-            raceTask();
             frameBusy = 0;
         }
+        system_delay_ms(2);   // 简单去抖，避免空转主循环高频重复采样按键
     }
 }
 
 void loadRoad() {
+    int16 idx;
+    uint8 leftFound = 0, rightFound = 0;
     Point LStart = getLStart(), RStart = getRStart();
     if (RUN_MODE == FORWARD) centerLineDistance = 18; //普通循迹恢复默认补线偏移
     LRoadCount = expRoadCount, RRoadCount = expRoadCount;
     getLBorder(LRoad, LStart, &LRoadCount, 0);
     getRBorder(RRoad, RStart, &RRoadCount, 0);
-    LBorderCount = LRoadCount;
+    LBorderCount = func_limit_ab(LRoadCount, 0, expRoadCount);
     memcpy(LBorder, LRoad, LBorderCount * sizeof(Point));
-    RBorderCount = RRoadCount;
+    RBorderCount = func_limit_ab(RRoadCount, 0, expRoadCount);
     memcpy(RBorder, RRoad, RBorderCount * sizeof(Point));
     getGodRoadLine(LRoad, LRoadCount);
     getGodRoadLine(RRoad, RRoadCount);
@@ -225,23 +246,17 @@ void loadRoad() {
     resampleRoad(RRoad, &RRoadCount, 0, 3);
     LCorner = findCorner(LRoad, LRoadCount, 0);
     RCorner = findCorner(RRoad, RRoadCount, 0);
-    findBorderIn = 0;
-    for (i = 0; i < LRoadCount; i += 2)
-        if (LRoad[i].y > 94) {
-            findBorderIn = 1;
-            break;
-        }
-    if (i >= LRoadCount) i = 0; // 循环未 break 时 i 会越界，退回首个点
-    if (LRoad[i].x > borderInTriggerDistance && findBorderIn) borderIn = 1;
+    /* borderIn：左右各自独立判定，标志绝不跨分支复用；索引前先确认 count>0 */
+    for (idx = 0; idx < LRoadCount; idx += 2)
+        if (LRoad[idx].y > 94) { leftFound = 1; break; }
+    if (leftFound && LRoadCount > 0 &&
+        LRoad[func_limit_ab(idx, 0, LRoadCount - 1)].x > borderInTriggerDistance)
+        borderIn = 1;
     else {
-        for (i = 0; i < RRoadCount; i += 2)
-            if (RRoad[i].y < 94) {
-                findBorderIn = 1;
-                break;
-            }
-        if (i >= RRoadCount) i = 0; // 循环未 break 时 i 会越界，退回首个点
-        if (RRoad[i].x > borderInTriggerDistance && findBorderIn) borderIn = 1;
-        else borderIn = 0;
+        for (idx = 0; idx < RRoadCount; idx += 2)
+            if (RRoad[idx].y < 94) { rightFound = 1; break; }
+        borderIn = (uint8) (rightFound && RRoadCount > 0 &&
+                            RRoad[func_limit_ab(idx, 0, RRoadCount - 1)].x > borderInTriggerDistance);
     }
     if (LCorner) {
         if (LCorner < 3) LCorner = 0;
@@ -266,16 +281,17 @@ void loadRoad() {
         getCenterLineByRBorder(RRoad, centerLine, RRoadCount);
         centerLineCount = RRoadCount;
     }
-    for (i = 1; i < centerLineCount; i++)
-        if (centerLine[i].x < 119) {
-            i--;
-            break;
-        }
-    if (i >= centerLineCount) i = 0; // 没找到 <119 的点时 i 越界，退回首个点
-    centerLine[i].x = MT9V03X_H - 1;
-    centerLine[i].y = centerLine[i + 1].y;
-    filterRoad(centerLine, centerLineCount);
-    resampleRoad(centerLine, &centerLineCount, i, 2);
+    if (centerLineCount >= 2) {
+        int16 startPos = 0;
+        for (idx = 1; idx < centerLineCount; idx++)
+            if (centerLine[idx].x < MT9V03X_H - 1) { startPos = idx - 1; break; }
+        centerLine[startPos].x = MT9V03X_H - 1;
+        centerLine[startPos].y = centerLine[func_limit_ab(startPos + 1, 0, centerLineCount - 1)].y;
+        filterRoad(centerLine, centerLineCount);
+        resampleRoad(centerLine, &centerLineCount, startPos, 2);
+    } else {
+        centerLineCount = 0;   // 边界全丢时不写脏点，控制量沿用到下一帧判定
+    }
     ALONG = LRoadCount > RRoadCount ? ALONG_L : ALONG_R;
 }
 
