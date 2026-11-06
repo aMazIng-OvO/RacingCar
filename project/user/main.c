@@ -95,11 +95,13 @@ void main(void) {
     clock_init(SYSTEM_CLOCK_96M);
     debug_init();
     ips200_init();
-    { //摄像头初始化最多重试 10 次；失败则提示并停在安全状态（原写法会无限重试，现场无法判断是摄像头故障）
-        uint8 camRetry = 0;
-        while (mt9v03x_init() && ++camRetry < 10) system_delay_ms(20);
-        if (camRetry >= 10) {
+    { //摄像头初始化：最多重试约 3 秒（150 × 20ms）。原写法无限重试，现场无法判断是摄像头故障；
+      //但预算太短又会在上电瞬间误判失败，所以留足 3 秒。
+        uint16 camRetry = 0;
+        while (mt9v03x_init() && ++camRetry < 150) system_delay_ms(20);
+        if (camRetry >= 150) {
             ips200_show_string(0, 120, "CAMERA INIT FAIL");
+            ips200_show_string(0, 140, "check ribbon/power");
             while (1) system_delay_ms(100);
         }
     }
