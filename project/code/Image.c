@@ -22,9 +22,26 @@ uint8 mt9v03x_frame[MT9V03X_H][MT9V03X_W];
 volatile uint8 frameBusy = 0;
 
 void mt9v03x_frame_snapshot(void) {
+    uint16 data i;
+    uint16 *data dst;
+    uint16 *data src;
     // 主循环还没消费完上一帧时跳过，防止快照被中途覆盖
     if (!frameBusy) {
-        memcpy(&mt9v03x_frame[0][0], &mt9v03x_image[0][0], MT9V03X_IMAGE_SIZE);
+        /* 22.5KB 整帧搬运是每帧最大的开销，而它跑在 DMA 完成中断里，直接决定实际帧率。
+         * 逐字节 memcpy 在 96MHz 下约 4~5ms，逼近 5.88ms 的帧间隔，只能隔帧处理（实测约 96fps）；
+         * 改成 16 位字搬运后循环次数减半，搬运结果与 memcpy 逐字节完全一致。 */
+        dst = (uint16 *) &mt9v03x_frame[0][0];
+        src = (uint16 *) &mt9v03x_image[0][0];
+        /* 每次搬 4 个字（8 字节），把循环开销再摊薄 4 倍；
+         * 22560 能被 8 整除，所以不会漏搬 */
+        for (i = 0; i < (MT9V03X_IMAGE_SIZE >> 3); i++) {
+            dst[0] = src[0];
+            dst[1] = src[1];
+            dst[2] = src[2];
+            dst[3] = src[3];
+            dst += 4;
+            src += 4;
+        }
         frameBusy = 1;
     }
 }
