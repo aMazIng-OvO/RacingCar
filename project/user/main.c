@@ -45,6 +45,11 @@
 #define ROUND_FAR_MAX   11    //对侧边界点数量上限
 #define CROSS_MAX       14    //十字判定：两侧边界点数上限
 
+/* 视觉单测模式：
+ *   1 = 只测图像，仅需「主板 + 摄像头」，不调用 motorInit()，因此不会启动 5ms PIT、不驱动电机/舵机/编码器
+ *   0 = 正常竞速流程（上车前必须改回 0） */
+#define VISION_ONLY     1
+
 int16 LCorner, RCorner, centerLineCount, RUN_MODE = FORWARD;
 volatile int16 LRoadCount = expRoadCount, RRoadCount = expRoadCount; //中断里做出界判断，需要 volatile
 static int16 imBtn, borderInTriggerDistance = 25;
@@ -53,6 +58,12 @@ uint8 switch1, switch2, ALONG = ALONG_R, topBtn, bottomBtn;
 Point centerLine[expRoadCount], LRoad[expRoadCount], RRoad[expRoadCount];
 extern int16 currentDuty;
 int16 data i;
+
+#if (VISION_ONLY)
+/* 视觉单测用的 1 ms 计时：只用于统计纯处理帧率（此模式不启动电机 PIT，TIM1 空闲） */
+static volatile uint16 visionMs = 0;
+static void visionTick(void) { visionMs++; }
+#endif
 
 /* 8 组整定参数：{舵机增益 c1, 前瞻点序号 c3, 弯道限速系数 c4, 直道限速 c5}
  * 拨码 SW1/SW2 选择基址（0/2/4/6），TOP 取同组奇数档、BOTTOM 取偶数档 */
@@ -127,6 +138,50 @@ void main(void) {
     LThreshold = RThreshold = threshold = imageInitThreshold();
     frameBusy = 0;   // 消费开机首帧，让后续帧正常搬运
     ips200_displayimage03x(&mt9v03x_frame[0][0], MT9V03X_W, MT9V03X_H, 0, 0); //上电显示一帧原始画面，确认摄像头正常
+#if (VISION_ONLY)
+    { /* ===== 视觉单测：只需主板 + 摄像头 =====
+       * 每帧都跑 loadRoad()；屏幕每 500 ms 才刷一次（刷屏要几十 ms，每帧都刷会把帧率压到 20~30）。
+       * 这样 FPS 显示的是「纯处理帧率」，不受刷屏拖累，可直接判断算法够不够快。
+       * 不调用 motorInit()，所以不启动 5 ms 控制 PIT，也不驱动电机/舵机/编码器。 */
+        uint16 frames = 0, fps = 0, lastFrame = 0, lastSec = 0, lastDraw = 0;
+        pit_ms_init(TIM1_PIT, 1, visionTick); // 1 ms 计时，仅用于统计帧率
+        while (1) {
+            if (!frameBusy) continue;
+            loadRoad();
+            frames++;
+            if ((uint16) (visionMs - lastDraw) >= 500) { // 每 500 ms 刷一次屏
+                lastDraw = visionMs;
+                if ((uint16) (visionMs - lastSec) >= 1000) {
+                    fps = frames - lastFrame;
+                    lastFrame = frames;
+                    lastSec = visionMs;
+                }
+                // 刷屏期间 frameBusy 仍为 1，ISR 不会换帧，画面不会撕裂
+                ips200_displayimage03x(&mt9v03x_frame[0][0], MT9V03X_W, MT9V03X_H, 0, 0);
+                for (i = 0; i < LRoadCount; i++) ips200_draw_point(LRoad[i].y, LRoad[i].x, RGB565_BLUE);
+                for (i = 0; i < RRoadCount; i++) ips200_draw_point(RRoad[i].y, RRoad[i].x, RGB565_RED);
+                for (i = 0; i < centerLineCount; i++) ips200_draw_point(centerLine[i].y, centerLine[i].x, RGB565_GREEN);
+                ips200_show_string(0, MT9V03X_H + 6, "L:");
+                ips200_show_int16(16, MT9V03X_H + 6, LRoadCount);
+                ips200_show_string(120, MT9V03X_H + 6, "R:");
+                ips200_show_int16(136, MT9V03X_H + 6, RRoadCount);
+                ips200_show_string(0, MT9V03X_H + 26, "C:");
+                ips200_show_int16(16, MT9V03X_H + 26, centerLineCount);
+                ips200_show_string(120, MT9V03X_H + 26, "THR:");
+                ips200_show_int16(152, MT9V03X_H + 26, threshold);
+                ips200_show_string(0, MT9V03X_H + 46, "LC:");
+                ips200_show_int16(24, MT9V03X_H + 46, LCorner);
+                ips200_show_string(120, MT9V03X_H + 46, "RC:");
+                ips200_show_int16(144, MT9V03X_H + 46, RCorner);
+                ips200_show_string(0, MT9V03X_H + 66, "FPS:");
+                ips200_show_int16(40, MT9V03X_H + 66, (int16) fps);
+                ips200_show_string(96, MT9V03X_H + 66, "FRAME:");
+                ips200_show_int16(160, MT9V03X_H + 66, (int16) frames);
+            }
+            frameBusy = 0; // 处理完才允许 ISR 搬下一帧
+        }
+    }
+#endif
     while (1) {
         system_delay_ms(50);
         switch2 = gpio_get_level(IO_PB1);
