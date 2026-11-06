@@ -50,6 +50,10 @@
  *   0 = 正常竞速流程（上车前必须改回 0） */
 #define VISION_ONLY     1
 
+/* 视觉单测的刷屏周期（ms）。刷一屏要 30~50 ms，周期太小会明显拖慢处理帧率；
+ * 200 ms ≈ 5 Hz，肉眼已经能跟上运动，同时只占约 15~25% 的时间。 */
+#define VISION_REFRESH_MS   200
+
 int16 LCorner, RCorner, centerLineCount, RUN_MODE = FORWARD;
 volatile int16 LRoadCount = expRoadCount, RRoadCount = expRoadCount; //中断里做出界判断，需要 volatile
 static int16 imBtn, borderInTriggerDistance = 25;
@@ -149,7 +153,7 @@ void main(void) {
             if (!frameBusy) continue;
             loadRoad();
             frames++;
-            if ((uint16) (visionMs - lastDraw) >= 500) { // 每 500 ms 刷一次屏
+            if ((uint16) (visionMs - lastDraw) >= VISION_REFRESH_MS) { // 按宏设定的周期刷屏
                 lastDraw = visionMs;
                 if ((uint16) (visionMs - lastSec) >= 1000) {
                     fps = frames - lastFrame;
@@ -158,9 +162,10 @@ void main(void) {
                 }
                 // 刷屏期间 frameBusy 仍为 1，ISR 不会换帧，画面不会撕裂
                 ips200_displayimage03x(&mt9v03x_frame[0][0], MT9V03X_W, MT9V03X_H, 0, 0);
-                for (i = 0; i < LRoadCount; i++) ips200_draw_point(LRoad[i].y, LRoad[i].x, RGB565_BLUE);
-                for (i = 0; i < RRoadCount; i++) ips200_draw_point(RRoad[i].y, RRoad[i].x, RGB565_RED);
-                for (i = 0; i < centerLineCount; i++) ips200_draw_point(centerLine[i].y, centerLine[i].x, RGB565_GREEN);
+                // 隔点绘制：点间距约 3 px，隔点仍然连贯，但绘制调用直接减半（draw_point 每次都要重设窗口，很贵）
+                for (i = 0; i < LRoadCount; i += 2) ips200_draw_point(LRoad[i].y, LRoad[i].x, RGB565_BLUE);
+                for (i = 0; i < RRoadCount; i += 2) ips200_draw_point(RRoad[i].y, RRoad[i].x, RGB565_RED);
+                for (i = 0; i < centerLineCount; i += 2) ips200_draw_point(centerLine[i].y, centerLine[i].x, RGB565_GREEN);
                 ips200_show_string(0, MT9V03X_H + 6, "L:");
                 ips200_show_int16(16, MT9V03X_H + 6, LRoadCount);
                 ips200_show_string(120, MT9V03X_H + 6, "R:");
