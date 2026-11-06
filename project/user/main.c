@@ -48,7 +48,7 @@
 /* 视觉单测模式：
  *   1 = 只测图像，仅需「主板 + 摄像头」，不调用 motorInit()，因此不会启动 5ms PIT、不驱动电机/舵机/编码器
  *   0 = 正常竞速流程（上车前必须改回 0） */
-#define VISION_ONLY     1
+#define VISION_ONLY     0
 
 /* 视觉单测的刷新策略（实测刷一整屏图像约 190 ms，占 1/5 秒，会严重拖慢处理帧率）：
  *   VISION_PREVIEW = 0 → 只刷下方数字（约 10 ms/次），FPS 近似「纯处理帧率」，优先保证速度
@@ -324,12 +324,12 @@ void main(void) {
                 raceShow();
             }
             frameBusy = 0;   // 消费完毕，允许 ISR 搬入下一帧
-        } else if (++noFrameTicks > 500) {
+        } else if (++noFrameTicks > 1000) {
             /* 稳定优先：摄像头掉帧 / DMA 异常时，不允许保持上一拍打角继续全速跑 */
             noFrameTicks = 0;
             if (raceState == RACE_RUNNING || raceState == RACE_BRAKING) raceStopNow();
         }
-        system_delay_ms(2);   // 主循环 2 ms 节拍：按键去抖 + 帧看门狗计时基准
+        system_delay_ms(1);   // 主循环 1 ms 节拍：按键去抖 + 帧看门狗计时基准（越小越不压帧延迟）
     }
 }
 
