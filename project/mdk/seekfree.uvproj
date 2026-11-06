@@ -680,19 +680,9 @@
               <FilePath>..\..\libraries\zf_device\zf_device_mt9v03x_dma.h</FilePath>
             </File>
             <File>
-              <FileName>zf_device_ips114.c</FileName>
-              <FileType>1</FileType>
-              <FilePath>..\..\libraries\zf_device\zf_device_ips114.c</FilePath>
-            </File>
-            <File>
               <FileName>zf_device_ips114.h</FileName>
               <FileType>5</FileType>
               <FilePath>..\..\libraries\zf_device\zf_device_ips114.h</FilePath>
-            </File>
-            <File>
-              <FileName>zf_device_tft180.c</FileName>
-              <FileType>1</FileType>
-              <FilePath>..\..\libraries\zf_device\zf_device_tft180.c</FilePath>
             </File>
             <File>
               <FileName>zf_device_tft180.h</FileName>
@@ -710,19 +700,9 @@
               <FilePath>..\..\libraries\zf_device\zf_device_ips200.h</FilePath>
             </File>
             <File>
-              <FileName>zf_device_ips200pro.c</FileName>
-              <FileType>1</FileType>
-              <FilePath>..\..\libraries\zf_device\zf_device_ips200pro.c</FilePath>
-            </File>
-            <File>
               <FileName>zf_device_ips200pro.h</FileName>
               <FileType>5</FileType>
               <FilePath>..\..\libraries\zf_device\zf_device_ips200pro.h</FilePath>
-            </File>
-            <File>
-              <FileName>zf_device_ble6a20.c</FileName>
-              <FileType>1</FileType>
-              <FilePath>..\..\libraries\zf_device\zf_device_ble6a20.c</FilePath>
             </File>
             <File>
               <FileName>zf_device_ble6a20.h</FileName>
@@ -730,19 +710,9 @@
               <FilePath>..\..\libraries\zf_device\zf_device_ble6a20.h</FilePath>
             </File>
             <File>
-              <FileName>zf_device_wifi_spi.c</FileName>
-              <FileType>1</FileType>
-              <FilePath>..\..\libraries\zf_device\zf_device_wifi_spi.c</FilePath>
-            </File>
-            <File>
               <FileName>zf_device_wifi_spi.h</FileName>
               <FileType>5</FileType>
               <FilePath>..\..\libraries\zf_device\zf_device_wifi_spi.h</FilePath>
-            </File>
-            <File>
-              <FileName>zf_device_wireless_uart.c</FileName>
-              <FileType>1</FileType>
-              <FilePath>..\..\libraries\zf_device\zf_device_wireless_uart.c</FilePath>
             </File>
             <File>
               <FileName>zf_device_wireless_uart.h</FileName>
@@ -825,19 +795,9 @@
               <FilePath>..\..\libraries\zf_components\stc32g_usb_lib\util.h</FilePath>
             </File>
             <File>
-              <FileName>seekfree_assistant.c</FileName>
-              <FileType>1</FileType>
-              <FilePath>..\..\libraries\zf_components\seekfree_assistant\seekfree_assistant.c</FilePath>
-            </File>
-            <File>
               <FileName>seekfree_assistant.h</FileName>
               <FileType>5</FileType>
               <FilePath>..\..\libraries\zf_components\seekfree_assistant\seekfree_assistant.h</FilePath>
-            </File>
-            <File>
-              <FileName>seekfree_assistant_interface.c</FileName>
-              <FileType>1</FileType>
-              <FilePath>..\..\libraries\zf_components\seekfree_assistant\seekfree_assistant_interface.c</FilePath>
             </File>
             <File>
               <FileName>seekfree_assistant_interface.h</FileName>
