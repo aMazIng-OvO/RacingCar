@@ -7,9 +7,6 @@
 const static int8 data dirF[4][2] = {{-2, 0},{0, 2},{2, 0},{0, -2}},
     dirL[4][2] = {{-2, -2},{-2, 2},{2,  2},{2,  -2}},
     dirR[4][2] = {{-2, 2},{2,  2},{2,  -2},{-2, -2}};
-const static int8 data dirFD[4][2] = {{-1, 0},{0, 1},{1, 0},{0, -1}},
-    dirLD[4][2] = {{-1, -1},{-1, 1},{1,  1},{1,  -1}},
-    dirRD[4][2] = {{-1, 1},{1,  1},{1,  -1},{-1, -1}};
 uint8 banUpdateThreshold = 0, LThreshold, RThreshold, threshold, centerLineDistance = 18;
 const uint8 reflection[120][188][2];
 const uint8 static data halfBlock = block / 2, data halfH = MT9V03X_H / 2, data halfW = MT9V03X_W / 2;
@@ -25,9 +22,26 @@ uint8 mt9v03x_frame[MT9V03X_H][MT9V03X_W];
 volatile uint8 frameBusy = 0;
 
 void mt9v03x_frame_snapshot(void) {
+    uint16 data i;
+    uint16 *data dst;
+    uint16 *data src;
     // 主循环还没消费完上一帧时跳过，防止快照被中途覆盖
     if (!frameBusy) {
-        memcpy(&mt9v03x_frame[0][0], &mt9v03x_image[0][0], MT9V03X_IMAGE_SIZE);
+        /* 22.5KB 整帧搬运是每帧最大的开销，而它跑在 DMA 完成中断里，直接决定实际帧率。
+         * 逐字节 memcpy 在 96MHz 下约 4~5ms，逼近 5.88ms 的帧间隔，只能隔帧处理（实测约 96fps）；
+         * 改成 16 位字搬运后循环次数减半，搬运结果与 memcpy 逐字节完全一致。 */
+        dst = (uint16 *) &mt9v03x_frame[0][0];
+        src = (uint16 *) &mt9v03x_image[0][0];
+        /* 每次搬 4 个字（8 字节），把循环开销再摊薄 4 倍；
+         * 22560 能被 8 整除，所以不会漏搬 */
+        for (i = 0; i < (MT9V03X_IMAGE_SIZE >> 3); i++) {
+            dst[0] = src[0];
+            dst[1] = src[1];
+            dst[2] = src[2];
+            dst[3] = src[3];
+            dst += 4;
+            src += 4;
+        }
         frameBusy = 1;
     }
 }
@@ -132,7 +146,7 @@ Point getRStart() {
     return ans;
 }
 
-void getLBorder(Point LRoad[], Point start, int16 *count, int8 delicate) {
+void getLBorder(Point LRoad[], Point start, int16 *count) {
     uint8 data
     x = start.x, data
     y = start.y, data
@@ -150,64 +164,33 @@ void getLBorder(Point LRoad[], Point start, int16 *count, int8 delicate) {
     // 写入点数硬夹在数组容量内：调用方误传负 count 时不会越界写 LRoad[]
     limit = func_limit_ab(*count, 0, expRoadCount);
     tempThreshold = localThreshold = getPointThreshold(x, y);
-    if (delicate) {
-        while (x > halfBlock + 1 && x < MT9V03X_H - halfBlock - 1 && y > halfBlock + 1 && y < MT9V03X_W - halfBlock - 1 && step < limit &&
+    while (x > halfBlock + 1 && x < MT9V03X_H - halfBlock - 1 && y > halfBlock + 1 && y < MT9V03X_W - halfBlock - 1 && step < limit &&
            turn < 4) {
-            up++;
-            if (up == 2) {
-                localThreshold = getPointThreshold(x, y);
-                up = 0;
-            }
-            if (mt9v03x_frame[dirFD[dir][0] + x][dirFD[dir][1] + y] < localThreshold) {
-                dir = (dir + 1) % 4;
-                turn++;
-            } else if (mt9v03x_frame[dirLD[dir][0] + x][dirLD[dir][1] + y] < localThreshold) {
-                x += dirFD[dir][0];
-                y += dirFD[dir][1];
-                LRoad[step].x = x;
-                LRoad[step].y = y;
-                step++;
-                turn = 0;
-            } else {
-                x += dirLD[dir][0];
-                y += dirLD[dir][1];
-                LRoad[step].x = x;
-                LRoad[step].y = y;
-                step++;
-                turn = 0;
-                dir = (dir + 3) % 4;
-            }
-            if (x == start.x && y == start.y && !turn) break;
+        up++;
+        if (up == 2) {
+            localThreshold = getPointThreshold(x, y);
+            up = 0;
         }
-    } else {
-        while (x > halfBlock + 1 && x < MT9V03X_H - halfBlock - 1 && y > halfBlock + 1 && y < MT9V03X_W - halfBlock - 1 && step < limit &&
-               turn < 4) {
-            up++;
-            if (up == 2) {
-                localThreshold = getPointThreshold(x, y);
-                up = 0;
-            }
-            if (mt9v03x_frame[dirF[dir][0] + x][dirF[dir][1] + y] < localThreshold) {
-                dir = (dir + 1) % 4;
-                turn++;
-            } else if (mt9v03x_frame[dirL[dir][0] + x][dirL[dir][1] + y] < localThreshold) {
-                x += dirF[dir][0];
-                y += dirF[dir][1];
-                LRoad[step].x = x;
-                LRoad[step].y = y;
-                step++;
-                turn = 0;
-            } else {
-                x += dirL[dir][0];
-                y += dirL[dir][1];
-                LRoad[step].x = x;
-                LRoad[step].y = y;
-                step++;
-                turn = 0;
-                dir = (dir + 3) % 4;
-            }
-            if (x == start.x && y == start.y && !turn) break;
+        if (mt9v03x_frame[dirF[dir][0] + x][dirF[dir][1] + y] < localThreshold) {
+            dir = (dir + 1) % 4;
+            turn++;
+        } else if (mt9v03x_frame[dirL[dir][0] + x][dirL[dir][1] + y] < localThreshold) {
+            x += dirF[dir][0];
+            y += dirF[dir][1];
+            LRoad[step].x = x;
+            LRoad[step].y = y;
+            step++;
+            turn = 0;
+        } else {
+            x += dirL[dir][0];
+            y += dirL[dir][1];
+            LRoad[step].x = x;
+            LRoad[step].y = y;
+            step++;
+            turn = 0;
+            dir = (dir + 3) % 4;
         }
+        if (x == start.x && y == start.y && !turn) break;
     }
     *count = step;
     if (step > 25 && !banUpdateThreshold) {
@@ -218,7 +201,7 @@ void getLBorder(Point LRoad[], Point start, int16 *count, int8 delicate) {
     // 否则同帧的 getLBorder 清掉后 getRBorder 又会更新，十字期间冻结失效
 }
 
-void getRBorder(Point RRoad[], Point start, int16 *count, int8 delicate) {
+void getRBorder(Point RRoad[], Point start, int16 *count) {
     uint8 data
     x = start.x, data
     y = start.y, data
@@ -235,64 +218,33 @@ void getRBorder(Point RRoad[], Point start, int16 *count, int8 delicate) {
     }
     limit = func_limit_ab(*count, 0, expRoadCount);
     tempThreshold = localThreshold = getPointThreshold(x, y);
-    if (delicate) {
-        while (x > halfBlock + 1 && x < 119 - halfBlock && y > halfBlock + 1 && y < 187 - halfBlock && step < limit &&
-               turn < 4) {
-            up++;
-            if (up == 2) {
-                localThreshold = getPointThreshold(x, y);
-                up = 0;
-            }
-            if (mt9v03x_frame[dirFD[dir][0] + x][dirFD[dir][1] + y] < localThreshold) {
-                dir = (dir + 3) % 4;
-                turn++;
-            } else if (mt9v03x_frame[dirRD[dir][0] + x][dirRD[dir][1] + y] < localThreshold) {
-                x += dirFD[dir][0];
-                y += dirFD[dir][1];
-                RRoad[step].x = x;
-                RRoad[step].y = y;
-                step++;
-                turn = 0;
-            } else {
-                x += dirRD[dir][0];
-                y += dirRD[dir][1];
-                RRoad[step].x = x;
-                RRoad[step].y = y;
-                step++;
-                turn = 0;
-                dir = (dir + 1) % 4;
-            }
-            if (x == start.x && y == start.y && !turn) break;
+    while (x > halfBlock + 1 && x < 119 - halfBlock && y > halfBlock + 1 && y < 187 - halfBlock && step < limit &&
+           turn < 4) {
+        up++;
+        if (up == 2) {
+            localThreshold = getPointThreshold(x, y);
+            up = 0;
         }
-    } else {
-        while (x > halfBlock + 1 && x < 119 - halfBlock && y > halfBlock + 1 && y < 187 - halfBlock && step < limit &&
-               turn < 4) {
-            up++;
-            if (up == 2) {
-                localThreshold = getPointThreshold(x, y);
-                up = 0;
-            }
-            if (mt9v03x_frame[dirF[dir][0] + x][dirF[dir][1] + y] < localThreshold) {
-                dir = (dir + 3) % 4;
-                turn++;
-            } else if (mt9v03x_frame[dirR[dir][0] + x][dirR[dir][1] + y] < localThreshold) {
-                x += dirF[dir][0];
-                y += dirF[dir][1];
-                RRoad[step].x = x;
-                RRoad[step].y = y;
-                step++;
-                turn = 0;
-            } else {
-                x += dirR[dir][0];
-                y += dirR[dir][1];
-                RRoad[step].x = x;
-                RRoad[step].y = y;
-                step++;
-                turn = 0;
-                dir = (dir + 1) % 4;
-            }
-            if (x == start.x && y == start.y && !turn) break;
+        if (mt9v03x_frame[dirF[dir][0] + x][dirF[dir][1] + y] < localThreshold) {
+            dir = (dir + 3) % 4;
+            turn++;
+        } else if (mt9v03x_frame[dirR[dir][0] + x][dirR[dir][1] + y] < localThreshold) {
+            x += dirF[dir][0];
+            y += dirF[dir][1];
+            RRoad[step].x = x;
+            RRoad[step].y = y;
+            step++;
+            turn = 0;
+        } else {
+            x += dirR[dir][0];
+            y += dirR[dir][1];
+            RRoad[step].x = x;
+            RRoad[step].y = y;
+            step++;
+            turn = 0;
+            dir = (dir + 1) % 4;
         }
+        if (x == start.x && y == start.y && !turn) break;
     }
     *count = step;
     if (step > 25 && !banUpdateThreshold) {

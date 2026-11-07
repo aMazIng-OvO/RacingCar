@@ -13,13 +13,14 @@
 /* ---------------- 蓝底白赛道现场标定参数 ---------------- */
 #define EDGE_DIFF 12          //边界梯度最小差（原15，蓝白对比低改小）
 #define EDGE_RATIO 7          //亮度和/差值比上限，越小越严格
-#define HIDE_ROW 90           //车身遮挡区起始行（该行以下中心区域强制为白）
+#define HIDE_ROW 119          //车身遮挡区起始行（该行以下中心区域强制为白）
+                              //桌面裸板测试临时关闭（119 = 不遮挡）；装车后改回 90
 #define HIDE_COL_L 48         //遮挡区左列
 #define HIDE_COL_R 140        //遮挡区右列
 #define CORNER_COS100 50      //拐点判定：cos阈值×100，越小越容易出拐点
 
-void getLBorder(Point LRoad[], Point start, int16 *count, int8 delicate);
-void getRBorder(Point RRoad[], Point start, int16 *count, int8 delicate);
+void getLBorder(Point LRoad[], Point start, int16 *count);
+void getRBorder(Point RRoad[], Point start, int16 *count);
 void getCenterLineByLBorder(Point roadLine[], Point centerLine[], int16 count);
 void getCenterLineByRBorder(Point roadLine[], Point centerLine[], int16 count);
 void filterRoad(Point rodeLine[], int16 count);
