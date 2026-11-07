@@ -150,19 +150,26 @@ void main(void) {
        * 每帧都跑 loadRoad()；屏幕每 500 ms 才刷一次（刷屏要几十 ms，每帧都刷会把帧率压到 20~30）。
        * 这样 FPS 显示的是「纯处理帧率」，不受刷屏拖累，可直接判断算法够不够快。
        * 不调用 motorInit()，所以不启动 5 ms 控制 PIT，也不驱动电机/舵机/编码器。 */
-        uint16 frames = 0, fps = 0, lastFrame = 0, lastSec = 0, lastDraw = 0;
+        uint16 frames = 0, fps = 0, lastFrame = 0, lastSec = 0, lastDraw = 0, drawAcc = 0;
         pit_ms_init(TIM1_PIT, 1, visionTick); // 1 ms 计时，仅用于统计帧率
         while (1) {
             if (!frameBusy) continue;
             loadRoad();
             frames++;
-            if ((uint16) (visionMs - lastDraw) >= VISION_REFRESH_MS) { // 按宏设定的周期刷屏
+            /* 帧率每秒结算一次，并把刷屏耗时从分母里扣掉，得到「纯处理帧率」。
+             * 实测一次文本刷新要数百毫秒（每个字符都要重设显示窗口），若把刷屏时间算进去，
+             * 读到的数字会远低于真实处理能力（之前总显示 5 就是这么来的）。 */
+            if ((uint16) (visionMs - lastSec) >= 1000) {
+                uint16 elapsed = (uint16) (visionMs - lastSec);
+                if (elapsed > drawAcc)
+                    fps = (uint16) ((uint32) (frames - lastFrame) * 1000 / (elapsed - drawAcc));
+                lastFrame = frames;
+                lastSec = visionMs;
+                drawAcc = 0;
+            }
+            if ((uint16) (visionMs - lastDraw) >= VISION_REFRESH_MS) { // 读数刷新周期
+                uint16 t0 = visionMs;
                 lastDraw = visionMs;
-                if ((uint16) (visionMs - lastSec) >= 1000) {
-                    fps = frames - lastFrame;
-                    lastFrame = frames;
-                    lastSec = visionMs;
-                }
 #if (VISION_PREVIEW)
                 // 刷屏期间 frameBusy 仍为 1，ISR 不会换帧，画面不会撕裂
                 ips200_displayimage03x(&mt9v03x_frame[0][0], MT9V03X_W, MT9V03X_H, 0, 0);
@@ -187,6 +194,7 @@ void main(void) {
                 ips200_show_int16(40, MT9V03X_H + 66, (int16) fps);
                 ips200_show_string(96, MT9V03X_H + 66, "FRAME:");
                 ips200_show_int16(160, MT9V03X_H + 66, (int16) frames);
+                drawAcc += (uint16) (visionMs - t0); // 累计本次刷屏耗时，供帧率结算扣除
             }
             frameBusy = 0; // 处理完才允许 ISR 搬下一帧
         }
