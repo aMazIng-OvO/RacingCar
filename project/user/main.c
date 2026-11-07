@@ -45,6 +45,20 @@
 #define ROUND_FAR_MAX   11    //对侧边界点数量上限
 #define CROSS_MAX       14    //十字判定：两侧边界点数上限
 
+/* ===== 视觉单测开关（当前为比赛版，已关闭） =====
+ * 1 = 纯视觉测试：只跑「采集 → 双缓冲快照 → 爬线 → 去畸变 → 中线 → 拐点」这条链路，
+ *     不调用 motorInit()，不启动 5ms 控制 PIT、不初始化 PWM/编码器、不驱动电机与舵机；
+ *     仅需「主板 + 摄像头 + 屏幕」即可标定视觉参数。
+ * 0 = 正常竞速流程（选档 → 发车 → 循迹/元素/停车）。 */
+#define VISION_ONLY     0
+
+/* 画面刷新策略（实测刷一整屏图像约 190 ms，是全机最贵的操作）：
+ *   VISION_PREVIEW = 1 → 显示原始灰度图 + 左边界(蓝)/右边界(红)/中线(绿)，用于标定
+ *   VISION_PREVIEW = 0 → 只刷下方数字，纯粹测帧率
+ * VISION_REFRESH_MS 为刷新周期（ms）；FPS 已扣除刷屏耗时，不受它影响。 */
+#define VISION_PREVIEW      1
+#define VISION_REFRESH_MS   1000
+
 int16 LCorner, RCorner, centerLineCount, RUN_MODE = FORWARD;
 volatile int16 LRoadCount = expRoadCount, RRoadCount = expRoadCount; //中断里做出界判断，需要 volatile
 static int16 imBtn, borderInTriggerDistance = 25;
@@ -52,7 +66,30 @@ volatile uint8 borderIn; //主循环写、中断读
 uint8 switch1, switch2, ALONG = ALONG_R, topBtn, bottomBtn;
 Point centerLine[expRoadCount], LRoad[expRoadCount], RRoad[expRoadCount];
 extern int16 currentDuty;
-int16 data i, j, pos;
+int16 data i;
+
+#if (VISION_ONLY)
+/* 视觉单测用的 1 ms 计时：只用于统计纯处理帧率（此模式不启动电机 PIT，TIM1 空闲） */
+static volatile uint16 visionMs = 0;
+static void visionTick(void) { visionMs++; }
+#endif
+
+/* 8 组整定参数：{舵机增益 c1, 前瞻点序号 c3, 弯道限速系数 c4, 直道限速 c5}
+ * 拨码 SW1/SW2 选择基址（0/2/4/6），TOP 取同组奇数档、BOTTOM 取偶数档 */
+static const int16 speedSet[8][4] = {
+    {260, 26, 4500, 520}, // 1
+    {200, 22, 4000, 300}, // 2
+    {210, 23, 4000, 320}, // 3
+    {220, 23, 4000, 340}, // 4
+    {230, 24, 4000, 360}, // 5
+    {240, 24, 4000, 380}, // 6
+    {250, 25, 4000, 450}, // 7
+    {260, 25, 4000, 500}  // 8
+};
+
+static void applySpeedSet(uint8 idx) {
+    motorInit(speedSet[idx][0], speedSet[idx][1], speedSet[idx][2], speedSet[idx][3], 0);
+}
 
 void loadRoad();
 
@@ -78,11 +115,13 @@ void main(void) {
     clock_init(SYSTEM_CLOCK_96M);
     debug_init();
     ips200_init();
-    { //摄像头初始化最多重试 10 次；失败则提示并停在安全状态（原写法会无限重试，现场无法判断是摄像头故障）
-        uint8 camRetry = 0;
-        while (mt9v03x_init() && ++camRetry < 10) system_delay_ms(20);
-        if (camRetry >= 10) {
+    { //摄像头初始化：最多重试约 3 秒（150 × 20ms）。原写法无限重试，现场无法判断是摄像头故障；
+      //但预算太短又会在上电瞬间误判失败，所以留足 3 秒。
+        uint16 camRetry = 0;
+        while (mt9v03x_init() && ++camRetry < 150) system_delay_ms(20);
+        if (camRetry >= 150) {
             ips200_show_string(0, 120, "CAMERA INIT FAIL");
+            ips200_show_string(0, 140, "check ribbon/power");
             while (1) system_delay_ms(100);
         }
     }
@@ -108,6 +147,61 @@ void main(void) {
     LThreshold = RThreshold = threshold = imageInitThreshold();
     frameBusy = 0;   // 消费开机首帧，让后续帧正常搬运
     ips200_displayimage03x(&mt9v03x_frame[0][0], MT9V03X_W, MT9V03X_H, 0, 0); //上电显示一帧原始画面，确认摄像头正常
+#if (VISION_ONLY)
+    { /* ===== 视觉单测：只需主板 + 摄像头 =====
+       * 每帧都跑 loadRoad()；屏幕每 500 ms 才刷一次（刷屏要几十 ms，每帧都刷会把帧率压到 20~30）。
+       * 这样 FPS 显示的是「纯处理帧率」，不受刷屏拖累，可直接判断算法够不够快。
+       * 不调用 motorInit()，所以不启动 5 ms 控制 PIT，也不驱动电机/舵机/编码器。 */
+        uint16 frames = 0, fps = 0, lastFrame = 0, lastSec = 0, lastDraw = 0, drawAcc = 0;
+        pit_ms_init(TIM1_PIT, 1, visionTick); // 1 ms 计时，仅用于统计帧率
+        while (1) {
+            if (!frameBusy) continue;
+            loadRoad();
+            frames++;
+            /* 帧率每秒结算一次，并把刷屏耗时从分母里扣掉，得到「纯处理帧率」。
+             * 实测一次文本刷新要数百毫秒（每个字符都要重设显示窗口），若把刷屏时间算进去，
+             * 读到的数字会远低于真实处理能力（之前总显示 5 就是这么来的）。 */
+            if ((uint16) (visionMs - lastSec) >= 1000) {
+                uint16 elapsed = (uint16) (visionMs - lastSec);
+                if (elapsed > drawAcc)
+                    fps = (uint16) ((uint32) (frames - lastFrame) * 1000 / (elapsed - drawAcc));
+                lastFrame = frames;
+                lastSec = visionMs;
+                drawAcc = 0;
+            }
+            if ((uint16) (visionMs - lastDraw) >= VISION_REFRESH_MS) { // 读数刷新周期
+                uint16 t0 = visionMs;
+                lastDraw = visionMs;
+#if (VISION_PREVIEW)
+                // 刷屏期间 frameBusy 仍为 1，ISR 不会换帧，画面不会撕裂
+                ips200_displayimage03x(&mt9v03x_frame[0][0], MT9V03X_W, MT9V03X_H, 0, 0);
+                // 隔点绘制：点间距约 3 px，隔点仍然连贯，但绘制调用直接减半（draw_point 每次都要重设窗口，很贵）
+                for (i = 0; i < LRoadCount; i += 2) ips200_draw_point(LRoad[i].y, LRoad[i].x, RGB565_BLUE);
+                for (i = 0; i < RRoadCount; i += 2) ips200_draw_point(RRoad[i].y, RRoad[i].x, RGB565_RED);
+                for (i = 0; i < centerLineCount; i += 2) ips200_draw_point(centerLine[i].y, centerLine[i].x, RGB565_GREEN);
+#endif
+                ips200_show_string(0, MT9V03X_H + 6, "L:");
+                ips200_show_int16(16, MT9V03X_H + 6, LRoadCount);
+                ips200_show_string(120, MT9V03X_H + 6, "R:");
+                ips200_show_int16(136, MT9V03X_H + 6, RRoadCount);
+                ips200_show_string(0, MT9V03X_H + 26, "C:");
+                ips200_show_int16(16, MT9V03X_H + 26, centerLineCount);
+                ips200_show_string(120, MT9V03X_H + 26, "THR:");
+                ips200_show_int16(152, MT9V03X_H + 26, threshold);
+                ips200_show_string(0, MT9V03X_H + 46, "LC:");
+                ips200_show_int16(24, MT9V03X_H + 46, LCorner);
+                ips200_show_string(120, MT9V03X_H + 46, "RC:");
+                ips200_show_int16(144, MT9V03X_H + 46, RCorner);
+                ips200_show_string(0, MT9V03X_H + 66, "FPS:");
+                ips200_show_int16(40, MT9V03X_H + 66, (int16) fps);
+                ips200_show_string(96, MT9V03X_H + 66, "FRAME:");
+                ips200_show_int16(160, MT9V03X_H + 66, (int16) frames);
+                drawAcc += (uint16) (visionMs - t0); // 累计本次刷屏耗时，供帧率结算扣除
+            }
+            frameBusy = 0; // 处理完才允许 ISR 搬下一帧
+        }
+    }
+#endif
     while (1) {
         system_delay_ms(50);
         switch2 = gpio_get_level(IO_PB1);
@@ -124,7 +218,7 @@ void main(void) {
                 ips200_show_string(0, 130, "SELECT: 1");
                 system_delay_ms(500);
                 system_delay_ms(500);
-                motorInit(260, 1000, 26, 4500, 520, 0, 0);
+                applySpeedSet(0);
                 break;
             }
             if (!bottomBtn) {
@@ -132,7 +226,7 @@ void main(void) {
                 ips200_show_string(0, 160, "SELECT: 2");
                 system_delay_ms(500);
                 system_delay_ms(500);
-                motorInit(200, 800, 22, 4000, 300, 0, 0);
+                applySpeedSet(1);
                 break;
             }
         } else if (switch1 && !switch2) {
@@ -143,7 +237,7 @@ void main(void) {
                 ips200_show_string(0, 130, "SELECT: 3");
                 system_delay_ms(500);
                 system_delay_ms(500);
-                motorInit(210, 900, 23, 4000, 320, 0, 0);
+                applySpeedSet(2);
                 break;
             }
             if (!bottomBtn) {
@@ -151,7 +245,7 @@ void main(void) {
                 ips200_show_string(0, 160, "SELECT: 4");
                 system_delay_ms(500);
                 system_delay_ms(500);
-                motorInit(220, 1000, 23, 4000, 340, 0, 0);
+                applySpeedSet(3);
                 break;
             }
         } else if (!switch1 && switch2) {
@@ -162,7 +256,7 @@ void main(void) {
                 ips200_show_string(0, 130, "SELECT: 5");
                 system_delay_ms(500);
                 system_delay_ms(500);
-                motorInit(230, 1000, 24, 4000, 360, 0, 0);
+                applySpeedSet(4);
                 break;
             }
             if (!bottomBtn) {
@@ -170,7 +264,7 @@ void main(void) {
                 ips200_show_string(0, 160, "SELECT: 6");
                 system_delay_ms(500);
                 system_delay_ms(500);
-                motorInit(240, 1000, 24, 4000, 380, 0, 0);
+                applySpeedSet(5);
                 break;
             }
         } else {
@@ -181,7 +275,7 @@ void main(void) {
                 ips200_show_string(0, 130, "SELECT: 7");
                 system_delay_ms(500);
                 system_delay_ms(500);
-                motorInit(250, 1000, 25, 4000, 450, 0, 0);
+                applySpeedSet(6);
                 break;
             }
             if (!bottomBtn) {
@@ -189,7 +283,7 @@ void main(void) {
                 ips200_show_string(0, 160, "SELECT: 8");
                 system_delay_ms(500);
                 system_delay_ms(500);
-                motorInit(260, 1000, 25, 4000, 500, 0, 0);
+                applySpeedSet(7);
                 break;
             }
         }
@@ -240,12 +334,12 @@ void main(void) {
                 raceShow();
             }
             frameBusy = 0;   // 消费完毕，允许 ISR 搬入下一帧
-        } else if (++noFrameTicks > 500) {
+        } else if (++noFrameTicks > 1000) {
             /* 稳定优先：摄像头掉帧 / DMA 异常时，不允许保持上一拍打角继续全速跑 */
             noFrameTicks = 0;
             if (raceState == RACE_RUNNING || raceState == RACE_BRAKING) raceStopNow();
         }
-        system_delay_ms(2);   // 主循环 2 ms 节拍：按键去抖 + 帧看门狗计时基准
+        system_delay_ms(1);   // 主循环 1 ms 节拍：按键去抖 + 帧看门狗计时基准（越小越不压帧延迟）
     }
 }
 
@@ -255,8 +349,8 @@ void loadRoad() {
     Point LStart = getLStart(), RStart = getRStart();
     if (RUN_MODE == FORWARD) centerLineDistance = 18; //普通循迹恢复默认补线偏移
     LRoadCount = expRoadCount, RRoadCount = expRoadCount;
-    getLBorder(LRoad, LStart, &LRoadCount, 0);
-    getRBorder(RRoad, RStart, &RRoadCount, 0);
+    getLBorder(LRoad, LStart, &LRoadCount);
+    getRBorder(RRoad, RStart, &RRoadCount);
     LBorderCount = func_limit_ab(LRoadCount, 0, expRoadCount);
     memcpy(LBorder, LRoad, LBorderCount * sizeof(Point));
     RBorderCount = func_limit_ab(RRoadCount, 0, expRoadCount);

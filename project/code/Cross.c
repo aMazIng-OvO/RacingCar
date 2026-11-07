@@ -100,10 +100,10 @@ void runCross() {
         banUpdateThreshold = 1;
         if (alongR) {
             start = getCrossRStart();
-            getRBorder(border, start, &roadCount, 0);
+            getRBorder(border, start, &roadCount);
         } else {
             start = getCrossLStart();
-            getLBorder(border, start, &roadCount, 0);
+            getLBorder(border, start, &roadCount);
         }
         getGodRoadLine(border, roadCount);
         resampleRoad(border, &roadCount, 0, 3);

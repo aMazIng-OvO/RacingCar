@@ -80,7 +80,13 @@ void raceTask(void) {
 }
 
 void raceShow(void) {
+    /* 屏幕是整机最贵的操作（一次文本刷新要重设窗口 + 走 SPI）。
+     * 待发车阶段按帧调用会把大量算力耗在刷屏上，这里降到约 1/30 帧率（≈5 Hz），
+     * 读数依然跟得上手推车标定，但不再和视觉/控制抢 CPU。 */
+    static uint8 div = 0;
     int32 snap;
+    if (++div < 30) return;
+    div = 0;
     interrupt_global_disable();
     snap = odometer;
     interrupt_global_enable();
