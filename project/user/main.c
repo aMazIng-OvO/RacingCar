@@ -45,17 +45,19 @@
 #define ROUND_FAR_MAX   11    //对侧边界点数量上限
 #define CROSS_MAX       14    //十字判定：两侧边界点数上限
 
-/* 视觉单测模式：
- *   1 = 只测图像，仅需「主板 + 摄像头」，不调用 motorInit()，因此不会启动 5ms PIT、不驱动电机/舵机/编码器
- *   0 = 正常竞速流程（上车前必须改回 0） */
+/* ===== 纯视觉测试模式 =====
+ * 只跑「采集 → 双缓冲快照 → 爬线 → 去畸变 → 中线 → 拐点」这条链路，
+ * 不调用 motorInit()：不启动 5ms 控制 PIT、不初始化 PWM/编码器、不驱动电机与舵机。
+ * 仅需「主板 + 摄像头 + 屏幕」即可标定视觉参数。
+ * 上车跑车时改成 0（届时走选档 → 发车流程）。 */
 #define VISION_ONLY     1
 
-/* 视觉单测的刷新策略（实测刷一整屏图像约 190 ms，占 1/5 秒，会严重拖慢处理帧率）：
- *   VISION_PREVIEW = 0 → 只刷下方数字（约 10 ms/次），FPS 近似「纯处理帧率」，优先保证速度
- *   VISION_PREVIEW = 1 → 同时刷图像与边界叠加，方便肉眼看画面，但帧率会被屏幕拖低
- * VISION_REFRESH_MS 为刷新周期（ms）。 */
-#define VISION_PREVIEW      0
-#define VISION_REFRESH_MS   500
+/* 画面刷新策略（实测刷一整屏图像约 190 ms，是全机最贵的操作）：
+ *   VISION_PREVIEW = 1 → 显示原始灰度图 + 左边界(蓝)/右边界(红)/中线(绿)，用于标定
+ *   VISION_PREVIEW = 0 → 只刷下方数字，纯粹测帧率
+ * VISION_REFRESH_MS 为刷新周期（ms）；FPS 已扣除刷屏耗时，不受它影响。 */
+#define VISION_PREVIEW      1
+#define VISION_REFRESH_MS   1000
 
 int16 LCorner, RCorner, centerLineCount, RUN_MODE = FORWARD;
 volatile int16 LRoadCount = expRoadCount, RRoadCount = expRoadCount; //中断里做出界判断，需要 volatile
