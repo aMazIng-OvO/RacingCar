@@ -45,17 +45,19 @@
 #define ROUND_FAR_MAX   11    //对侧边界点数量上限
 #define CROSS_MAX       14    //十字判定：两侧边界点数上限
 
-/* 视觉单测模式：
- *   1 = 只测图像，仅需「主板 + 摄像头」，不调用 motorInit()，因此不会启动 5ms PIT、不驱动电机/舵机/编码器
- *   0 = 正常竞速流程（上车前必须改回 0） */
+/* ===== 视觉单测开关（当前为比赛版，已关闭） =====
+ * 1 = 纯视觉测试：只跑「采集 → 双缓冲快照 → 爬线 → 去畸变 → 中线 → 拐点」这条链路，
+ *     不调用 motorInit()，不启动 5ms 控制 PIT、不初始化 PWM/编码器、不驱动电机与舵机；
+ *     仅需「主板 + 摄像头 + 屏幕」即可标定视觉参数。
+ * 0 = 正常竞速流程（选档 → 发车 → 循迹/元素/停车）。 */
 #define VISION_ONLY     0
 
-/* 视觉单测的刷新策略（实测刷一整屏图像约 190 ms，占 1/5 秒，会严重拖慢处理帧率）：
- *   VISION_PREVIEW = 0 → 只刷下方数字（约 10 ms/次），FPS 近似「纯处理帧率」，优先保证速度
- *   VISION_PREVIEW = 1 → 同时刷图像与边界叠加，方便肉眼看画面，但帧率会被屏幕拖低
- * VISION_REFRESH_MS 为刷新周期（ms）。 */
-#define VISION_PREVIEW      0
-#define VISION_REFRESH_MS   500
+/* 画面刷新策略（实测刷一整屏图像约 190 ms，是全机最贵的操作）：
+ *   VISION_PREVIEW = 1 → 显示原始灰度图 + 左边界(蓝)/右边界(红)/中线(绿)，用于标定
+ *   VISION_PREVIEW = 0 → 只刷下方数字，纯粹测帧率
+ * VISION_REFRESH_MS 为刷新周期（ms）；FPS 已扣除刷屏耗时，不受它影响。 */
+#define VISION_PREVIEW      1
+#define VISION_REFRESH_MS   1000
 
 int16 LCorner, RCorner, centerLineCount, RUN_MODE = FORWARD;
 volatile int16 LRoadCount = expRoadCount, RRoadCount = expRoadCount; //中断里做出界判断，需要 volatile
@@ -150,19 +152,26 @@ void main(void) {
        * 每帧都跑 loadRoad()；屏幕每 500 ms 才刷一次（刷屏要几十 ms，每帧都刷会把帧率压到 20~30）。
        * 这样 FPS 显示的是「纯处理帧率」，不受刷屏拖累，可直接判断算法够不够快。
        * 不调用 motorInit()，所以不启动 5 ms 控制 PIT，也不驱动电机/舵机/编码器。 */
-        uint16 frames = 0, fps = 0, lastFrame = 0, lastSec = 0, lastDraw = 0;
+        uint16 frames = 0, fps = 0, lastFrame = 0, lastSec = 0, lastDraw = 0, drawAcc = 0;
         pit_ms_init(TIM1_PIT, 1, visionTick); // 1 ms 计时，仅用于统计帧率
         while (1) {
             if (!frameBusy) continue;
             loadRoad();
             frames++;
-            if ((uint16) (visionMs - lastDraw) >= VISION_REFRESH_MS) { // 按宏设定的周期刷屏
+            /* 帧率每秒结算一次，并把刷屏耗时从分母里扣掉，得到「纯处理帧率」。
+             * 实测一次文本刷新要数百毫秒（每个字符都要重设显示窗口），若把刷屏时间算进去，
+             * 读到的数字会远低于真实处理能力（之前总显示 5 就是这么来的）。 */
+            if ((uint16) (visionMs - lastSec) >= 1000) {
+                uint16 elapsed = (uint16) (visionMs - lastSec);
+                if (elapsed > drawAcc)
+                    fps = (uint16) ((uint32) (frames - lastFrame) * 1000 / (elapsed - drawAcc));
+                lastFrame = frames;
+                lastSec = visionMs;
+                drawAcc = 0;
+            }
+            if ((uint16) (visionMs - lastDraw) >= VISION_REFRESH_MS) { // 读数刷新周期
+                uint16 t0 = visionMs;
                 lastDraw = visionMs;
-                if ((uint16) (visionMs - lastSec) >= 1000) {
-                    fps = frames - lastFrame;
-                    lastFrame = frames;
-                    lastSec = visionMs;
-                }
 #if (VISION_PREVIEW)
                 // 刷屏期间 frameBusy 仍为 1，ISR 不会换帧，画面不会撕裂
                 ips200_displayimage03x(&mt9v03x_frame[0][0], MT9V03X_W, MT9V03X_H, 0, 0);
@@ -187,6 +196,7 @@ void main(void) {
                 ips200_show_int16(40, MT9V03X_H + 66, (int16) fps);
                 ips200_show_string(96, MT9V03X_H + 66, "FRAME:");
                 ips200_show_int16(160, MT9V03X_H + 66, (int16) frames);
+                drawAcc += (uint16) (visionMs - t0); // 累计本次刷屏耗时，供帧率结算扣除
             }
             frameBusy = 0; // 处理完才允许 ISR 搬下一帧
         }
