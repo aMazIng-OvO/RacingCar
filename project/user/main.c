@@ -135,9 +135,14 @@ void main(void) {
     interrupt_set_priority(LCM_DMA_IRQn, 1);
     gpio_init(IO_PB1, GPI, 0, GPI_PULL_UP);
     gpio_init(IO_PB0, GPI, 0, GPI_PULL_UP);
-    gpio_init(IO_P02, GPI, 0, GPI_PULL_UP);
-    gpio_init(IO_P01, GPI, 0, GPI_PULL_UP);
-    gpio_init(IO_P32, GPI, 0, GPI_PULL_UP);
+    /* 三个独立按键：按车上实测接线标定（原工程为 P02/P01/P32，本车不适用）
+     *   B2 = PB2 → TOP    （发车 / 选奇数档）
+     *   B3 = PB3 → BOTTOM （标定一圈 / 选偶数档）
+     *   B4 = PB4 → IMAGE  （急停）
+     * PB0/PB1 是拨码开关、PB6/PB7 是摄像头 SCCB，均不冲突 */
+    gpio_init(IO_PB2, GPI, 0, GPI_PULL_UP);  // TOP
+    gpio_init(IO_PB3, GPI, 0, GPI_PULL_UP);  // BOTTOM
+    gpio_init(IO_PB4, GPI, 0, GPI_PULL_UP);  // IMAGE
     gpio_init(IO_P90, GPO, 0, GPO_PUSH_PULL); //蜂鸣器
     //gpio_init(IO_P04, GPO, 0, GPO_PUSH_PULL); //示波器
     { //等 DMA 中断搬入第一帧完整快照再估阈值（带超时，防止摄像头异常时死等）
@@ -206,9 +211,9 @@ void main(void) {
         system_delay_ms(50);
         switch2 = gpio_get_level(IO_PB1);
         switch1 = gpio_get_level(IO_PB0);
-        topBtn = gpio_get_level(IO_P02);
-        bottomBtn = gpio_get_level(IO_P01);
-        imBtn = gpio_get_level(IO_P32);
+        topBtn = gpio_get_level(IO_PB2);
+        bottomBtn = gpio_get_level(IO_PB3);
+        imBtn = gpio_get_level(IO_PB4);
         // 图像调试预览已移除（原依赖 outputImage，已删除以腾出 XRAM 给双缓冲）
         if (!switch1 && !switch2) {
             ips200_show_string(0, MT9V03X_H + 10, "T: SPEED 1");
@@ -298,7 +303,7 @@ void main(void) {
     while (1) {
         static uint16 noFrameTicks = 0;  // 帧看门狗：2 ms 节拍累计，约 1 s 无新帧则安全停车
         /* 按键与里程判定不依赖相机帧：摄像头停帧时仍能急停 / 收车 */
-        uint8 tBtn = gpio_get_level(IO_P02), bBtn = gpio_get_level(IO_P01), sBtn = gpio_get_level(IO_P32);
+        uint8 tBtn = gpio_get_level(IO_PB2), bBtn = gpio_get_level(IO_PB3), sBtn = gpio_get_level(IO_PB4);
         if (topBtn && !tBtn && (raceState == RACE_IDLE || raceState == RACE_STOPPED)) raceStart();
         if (bottomBtn && !bBtn && raceState == RACE_IDLE) raceSetLap();
         if (imBtn && !sBtn && (raceState == RACE_RUNNING || raceState == RACE_BRAKING)) raceStopNow();
