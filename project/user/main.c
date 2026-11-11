@@ -302,6 +302,7 @@ void main(void) {
     frameBusy = 0;   // 丢弃选档期间累积的旧帧，第一拍处理发车后的当前画面
     while (1) {
         static uint16 noFrameTicks = 0;  // 帧看门狗：2 ms 节拍累计，约 1 s 无新帧则安全停车
+        static uint8 lastRaceState = RACE_IDLE; // 用于检测 raceState 变化并刷新屏幕提示（初始 IDLE，保留发车提示）
         /* 按键与里程判定不依赖相机帧：摄像头停帧时仍能急停 / 收车 */
         uint8 tBtn = gpio_get_level(IO_PB2), bBtn = gpio_get_level(IO_PB3), sBtn = gpio_get_level(IO_PB4);
         if (topBtn && !tBtn && (raceState == RACE_IDLE || raceState == RACE_STOPPED)) raceStart();
@@ -311,6 +312,20 @@ void main(void) {
         bottomBtn = bBtn;
         imBtn = sBtn;
         raceTask();
+        /* 状态变化时刷新一行提示：发车/刹车/停车都只有一个状态切换点，开销可忽略；
+         * 之前发车后屏幕仍停留在 "IMAGE : STOP" 那三行静态提示上，容易被误认为停车了 */
+        if (lastRaceState != raceState) {
+            lastRaceState = raceState;
+            ips200_clear(RGB565_WHITE);
+            if (raceState == RACE_RUNNING)
+                ips200_show_string(0, 150, "RUN");
+            else if (raceState == RACE_BRAKING)
+                ips200_show_string(0, 150, "BRAKE");
+            else if (raceState == RACE_STOPPED)
+                ips200_show_string(0, 150, "STOP");
+            else
+                ips200_show_string(0, 150, "READY");
+        }
 
         if (frameBusy) {
             noFrameTicks = 0;   // 收到完整帧，喂狗

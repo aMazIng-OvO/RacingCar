@@ -87,11 +87,15 @@ static void pitHandler() {
     currentSpeed = (int16) func_limit(avg, 32767);
     odometer += avg;   // IDLE 下同样累加，供推车标定一圈里程
     // 冲出赛道保护：跑车过程中两侧边界全部丢失，或视野内 5 个采样点全暗，判定出界停车
-    if (stop || ((raceState == RACE_RUNNING || raceState == RACE_BRAKING) &&
-                 ((!LRoadCount && !RRoadCount) ||
-                  (mt9v03x_frame[84][95] < threshold && mt9v03x_frame[88][47] < threshold &&
-                   mt9v03x_frame[87][141] < threshold && mt9v03x_frame[75][120] < threshold &&
-                   mt9v03x_frame[74][64] < threshold)))) {
+    if (stop
+#if (!LOW_SPEED_TEST)
+        || ((raceState == RACE_RUNNING || raceState == RACE_BRAKING) &&
+            ((!LRoadCount && !RRoadCount) ||
+             (mt9v03x_frame[84][95] < threshold && mt9v03x_frame[88][47] < threshold &&
+              mt9v03x_frame[87][141] < threshold && mt9v03x_frame[75][120] < threshold &&
+              mt9v03x_frame[74][64] < threshold)))
+#endif
+       ) {
         // 出界保护必须与比赛状态同步，否则 raceTask 永远等不到里程且 TOP 键无法恢复
         if (!stop && (raceState == RACE_RUNNING || raceState == RACE_BRAKING))
             raceState = RACE_STOPPED;
@@ -102,8 +106,10 @@ static void pitHandler() {
     } else {
         pwm_set_duty(PWME_CH3P_PA4, steerMid + steerPIDCalculate(&steerPid, duty));
         slow = !borderIn ? 1 : (currentSpeed < 350 ? 0 : slow);
+#if (!LOW_SPEED_TEST)
         // 刹车段速度由 raceTask 锁定，环岛入弯减速不能把它抬回去
         if (!handle && raceState == RACE_RUNNING && borderIn && currentSpeed > 420 && slow) setSpeed = 200;
+#endif
         RSetSpeed = setSpeed + (!R || !enableDifSpeed ? 0 : setSpeed * 8 / R);
         LSetSpeed = setSpeed - (!R || !enableDifSpeed ? 0 : setSpeed * 8 / R);
         pwm_set_duty(motorPwmR, motorPIDCalculate(&motorRPID, RSetSpeed, encoderR));
@@ -149,7 +155,11 @@ void setServoDuty(int8 d) {
     if (!handle && raceState != RACE_BRAKING && c4 > 0) {
         // 稳定优先：先算目标再一次写入 volatile，避免读-改-写被 PIT 插入
         int16 target = !r ? ts : (int16) func_min(v, (int32) ts);
+#if (LOW_SPEED_TEST)
+        setSpeed = (int16) func_limit_ab((int32) target, 0, LOW_SPEED_TEST_CAP);
+#else
         setSpeed = (int16) func_limit_ab((int32) target, 0, SAFE_SPEED_CEILING);
+#endif
     }
     R = d < 0 ? -r : r;
     duty = (int16) d * 12;
