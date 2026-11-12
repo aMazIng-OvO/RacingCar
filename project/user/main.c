@@ -303,34 +303,55 @@ void main(void) {
     while (1) {
         static uint16 noFrameTicks = 0;  // 帧看门狗：2 ms 节拍累计，约 1 s 无新帧则安全停车
         static uint8 lastRaceState = RACE_IDLE; // 用于检测 raceState 变化并刷新屏幕提示（初始 IDLE，保留发车提示）
+        static uint8 lastFault = 0;        // 故障位变化时也刷一次屏
+        static uint8 borderLost = 0;       // 连续看不到边界的帧数
         /* 按键与里程判定不依赖相机帧：摄像头停帧时仍能急停 / 收车 */
         uint8 tBtn = gpio_get_level(IO_PB2), bBtn = gpio_get_level(IO_PB3), sBtn = gpio_get_level(IO_PB4);
-        if (topBtn && !tBtn && (raceState == RACE_IDLE || raceState == RACE_STOPPED)) raceStart();
+        if (topBtn && !tBtn && (raceState == RACE_IDLE || raceState == RACE_STOPPED)) {
+            faultReset(); // 每次发车清空上一轮故障位（停车时保留，便于赛后查看原因）
+            raceStart();
+        }
         if (bottomBtn && !bBtn && raceState == RACE_IDLE) raceSetLap();
         if (imBtn && !sBtn && (raceState == RACE_RUNNING || raceState == RACE_BRAKING)) raceStopNow();
         topBtn = tBtn;
         bottomBtn = bBtn;
         imBtn = sBtn;
         raceTask();
-        /* 状态变化时刷新一行提示：发车/刹车/停车都只有一个状态切换点，开销可忽略；
-         * 之前发车后屏幕仍停留在 "IMAGE : STOP" 那三行静态提示上，容易被误认为停车了 */
-        if (lastRaceState != raceState) {
+        /* 状态或故障位变化时刷一次屏（只在切换点发生，开销可忽略）；
+         * 之前发车后屏幕仍停在三行静态提示上，容易被误认为停车了 */
+        if (lastRaceState != raceState || lastFault != faultFlags) {
             lastRaceState = raceState;
+            lastFault = faultFlags;
             ips200_clear(RGB565_WHITE);
             if (raceState == RACE_RUNNING)
-                ips200_show_string(0, 150, "RUN");
+                ips200_show_string(0, 130, "RUN");
             else if (raceState == RACE_BRAKING)
-                ips200_show_string(0, 150, "BRAKE");
+                ips200_show_string(0, 130, "BRAKE");
             else if (raceState == RACE_STOPPED)
-                ips200_show_string(0, 150, "STOP");
+                ips200_show_string(0, 130, "STOP");
             else
-                ips200_show_string(0, 150, "READY");
+                ips200_show_string(0, 130, "READY");
+            ips200_show_string(0, 160, "ERR:");
+            ips200_show_int16(64, 160, (int16) faultFlags);
         }
 
         if (frameBusy) {
             noFrameTicks = 0;   // 收到完整帧，喂狗
             loadRoad();
             if (raceState == RACE_RUNNING || raceState == RACE_BRAKING) {
+                /* 图像类异常检测（每帧一次，只读） */
+                if (threshold == 128)
+                    faultFlags |= FAULT_IMAGE_DARK; // 采样区几乎没有明暗差
+                else
+                    faultFlags &= (uint8) (~FAULT_IMAGE_DARK);
+                if (!LRoadCount && !RRoadCount) {
+                    if (borderLost < 250) borderLost++;
+                    if (borderLost >= 200) faultFlags |= FAULT_NO_BORDER; // 约 2 s 看不到赛道
+                } else {
+                    borderLost = 0;
+                    faultFlags &= (uint8) (~FAULT_NO_BORDER);
+                }
+
                 if (ENABLE_CROSS && (RUN_MODE == CROSS ||
                                      (RUN_MODE == FORWARD && ((RCorner && RRoadCount > 2) || (LCorner && LRoadCount > 2)) &&
                                       LRoadCount < CROSS_MAX && RRoadCount < CROSS_MAX))) {
@@ -357,6 +378,7 @@ void main(void) {
         } else if (++noFrameTicks > 1000) {
             /* 稳定优先：摄像头掉帧 / DMA 异常时，不允许保持上一拍打角继续全速跑 */
             noFrameTicks = 0;
+            faultFlags |= FAULT_NO_FRAME | FAULT_STOPPED; // 约 1 s 无新帧
             if (raceState == RACE_RUNNING || raceState == RACE_BRAKING) raceStopNow();
         }
         system_delay_ms(1);   // 主循环 1 ms 节拍：按键去抖 + 帧看门狗计时基准（越小越不压帧延迟）

@@ -23,6 +23,69 @@ int16 currentDuty;
 extern volatile int32 odometer;
 extern volatile int16 LRoadCount, RRoadCount;
 
+/* ===== 异常状态检测 ===== */
+volatile uint8 faultFlags = 0;
+static uint8 encLostL = 0, encLostR = 0, stallCnt = 0, graceCnt = 0;
+
+void faultReset(void) {
+    faultFlags = 0;
+    encLostL = encLostR = stallCnt = graceCnt = 0;
+}
+
+/* 在 5 ms 控制中断里调用：只读编码器与 setSpeed，不改变任何控制量，
+ * 唯一的动作是判定为致命故障时置 stop、切到 RACE_STOPPED。 */
+static void faultScan(void) {
+    int16 aL, aR, dif, sum;
+    if (raceState != RACE_RUNNING && raceState != RACE_BRAKING) {
+        encLostL = encLostR = stallCnt = graceCnt = 0;
+        return;
+    }
+    if (graceCnt < 200) { // 发车后约 1 s 内不判：PID 起转、齿轮间隙都需要时间
+        graceCnt++;
+        return;
+    }
+
+    aL = func_abs(encoderL);
+    aR = func_abs(encoderR);
+
+    if (setSpeed > 60) { // 有明确速度指令才判编码器
+        if (aL < 3) {
+            if (encLostL < 250) encLostL++;
+        } else
+            encLostL = 0;
+        if (aR < 3) {
+            if (encLostR < 250) encLostR++;
+        } else
+            encLostR = 0;
+        if (encLostL >= 60) faultFlags |= FAULT_ENC_L_DOWN; // 300 ms 无反馈
+        if (encLostR >= 60) faultFlags |= FAULT_ENC_R_DOWN;
+    } else {
+        encLostL = encLostR = 0;
+    }
+
+    if (aL > 30 && aR > 30) { // 两轮都转起来后比较速差
+        dif = (aL > aR) ? (int16) (aL - aR) : (int16) (aR - aL);
+        sum = (int16) (aL + aR);
+        if ((int16) (dif * 2) > sum)
+            faultFlags |= FAULT_ENC_SKEW; // 差 > 50%
+        else
+            faultFlags &= (uint8) (~FAULT_ENC_SKEW);
+    }
+
+    if (setSpeed > 150 && aL < 8 && aR < 8) { // 有指令但两轮几乎不转
+        if (stallCnt < 250) stallCnt++;
+        if (stallCnt >= 100) faultFlags |= FAULT_STALL; // 500 ms
+    } else
+        stallCnt = 0;
+
+    /* 致命故障：编码器掉线会让速度环正反馈飞车，必须立即停车 */
+    if (faultFlags & (FAULT_ENC_L_DOWN | FAULT_ENC_R_DOWN | FAULT_STALL)) {
+        faultFlags |= FAULT_STOPPED;
+        stop = 1;
+        if (raceState == RACE_RUNNING || raceState == RACE_BRAKING) raceState = RACE_STOPPED;
+    }
+}
+
 typedef struct {
     int16 Kp;
     int16 Ki;
@@ -86,6 +149,7 @@ static void pitHandler() {
     avg = (cntR + cntL) / 2;
     currentSpeed = (int16) func_limit(avg, 32767);
     odometer += avg;   // IDLE 下同样累加，供推车标定一圈里程
+    faultScan();       // 异常状态检测（只读，不干预控制，除致命故障外）
     // 冲出赛道保护：跑车过程中两侧边界全部丢失，或视野内 5 个采样点全暗，判定出界停车
     if (stop
 #if (!LOW_SPEED_TEST)

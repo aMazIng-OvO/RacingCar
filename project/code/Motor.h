@@ -22,6 +22,21 @@
 #define LOW_SPEED_TEST      1
 #define LOW_SPEED_TEST_CAP  150
 
+/* ===== 异常状态检测（faultFlags 位标志，屏幕显示 ERR:<十进制>） =====
+ * 编码器/堵转在 5 ms 控制中断里判，图像类在主循环按帧判；
+ * 编码器掉线与堵转属于致命故障，会立即停车并置 FAULT_STOPPED。 */
+#define FAULT_ENC_L_DOWN   0x01   // 左编码器长时间无反馈（有速度指令但计数为 0）
+#define FAULT_ENC_R_DOWN   0x02   // 右编码器长时间无反馈
+#define FAULT_ENC_SKEW     0x04   // 左右轮速差超过 50%（打滑 / 一侧编码器异常）
+#define FAULT_STALL        0x08   // 有速度指令但两轮都几乎不转（堵转 / 驱动未上电）
+#define FAULT_NO_FRAME     0x10   // 摄像头停帧（约 1 s 无新帧）
+#define FAULT_IMAGE_DARK   0x20   // 图像几乎没有对比（全局阈值退回 128）
+#define FAULT_NO_BORDER    0x40   // 连续多帧看不到赛道边界
+#define FAULT_STOPPED      0x80   // 因故障被强制停车
+
+extern volatile uint8 faultFlags;
+void faultReset(void);
+
 #define FORWARD 114
 #define CROSS 514
 #define R_ROUND 1919
