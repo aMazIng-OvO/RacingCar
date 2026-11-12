@@ -85,9 +85,13 @@ static void faultScan(void) {
     baseL = pidOutL; // 增量式 PID 的实际输出（-10000~+10000）
     baseR = pidOutR;
 
-    if (func_abs(baseL) >= 9800 || func_abs(baseR) >= 9800) { // 输出打满 1 s：车却跑不动
+    /* 饱和判定：输出打满 **且** 速度连目标的一半都达不到。
+     * 只看输出会误判——大油门起步、上坡、低摩擦时 PID 打满 1 s 是正常现象，
+     * 真正的异常是"打满了却跑不起来"（堵转 / 欠压 / 轮子卡住）。 */
+    if ((func_abs(baseL) >= 9800 || func_abs(baseR) >= 9800) &&
+        ((int32) currentSpeed * 2 < (int32) setSpeed)) {
         if (satCnt < 250) satCnt++;
-        if (satCnt >= 200) faultFlags |= FAULT_PID_SAT;
+        if (satCnt >= 200) faultFlags |= FAULT_PID_SAT; // 1 s
     } else
         satCnt = 0;
 

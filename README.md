@@ -230,7 +230,7 @@ Program Size: data=107.6  edata+hdata=8192  xdata=56294  const=50701  code=97140
 | `FAULT_NO_FRAME` | 0x10 | 约 1 s 无新帧（掉帧 / DMA 异常） | `main.c` 帧看门狗 | **是** |
 | `FAULT_IMAGE_DARK` | 0x20 | 全局阈值退回 128（采样区几乎没有明暗差） | `main.c` 每帧 | 否 |
 | `FAULT_NO_BORDER` | 0x40 | 连续约 2 s 两侧边界都为 0 | `main.c` 每帧 | 否 |
-| `FAULT_PID_SAT` | 0x0100 | PID 输出打满 ≥98% 持续 1 s（车跑不动：堵转 / 欠压 / 参数异常） | `Motor.c` 5 ms 中断 | **是** |
+| `FAULT_PID_SAT` | 0x0100 | PID 输出打满 ≥98% **且**速度不到目标一半，持续 1 s（堵转 / 欠压 / 轮子卡住） | `Motor.c` 5 ms 中断 | **是** |
 | `FAULT_PID_REV` | 0x0200 | PID 输出与编码器计数方向相反持续 250 ms（速度环正反馈，飞车前兆） | 同上 | **是** |
 | `FAULT_STOPPED` | 0x80 | 因致命故障被强制停车（同时驱动蜂鸣器响 150 ms） | 上述致命项 | — |
 
