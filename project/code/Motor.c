@@ -24,18 +24,21 @@ extern volatile int32 odometer;
 extern volatile int16 LRoadCount, RRoadCount;
 
 /* ===== 异常状态检测 ===== */
-volatile uint8 faultFlags = 0;
+volatile uint16 faultFlags = 0;
 static uint8 encLostL = 0, encLostR = 0, stallCnt = 0, graceCnt = 0;
+static uint8 satCnt = 0, revCntL = 0, revCntR = 0; //PID 饱和 / 正反馈计时
+static int16 pidOutL = 0, pidOutR = 0;             //PID 实际输出，供异常检测读取
 
 void faultReset(void) {
     faultFlags = 0;
     encLostL = encLostR = stallCnt = graceCnt = 0;
+    satCnt = revCntL = revCntR = 0;
 }
 
 /* 在 5 ms 控制中断里调用：只读编码器与 setSpeed，不改变任何控制量，
  * 唯一的动作是判定为致命故障时置 stop、切到 RACE_STOPPED。 */
 static void faultScan(void) {
-    int16 aL, aR, dif, sum;
+    int16 aL, aR, dif, sum, baseL, baseR;
     if (raceState != RACE_RUNNING && raceState != RACE_BRAKING) {
         encLostL = encLostR = stallCnt = graceCnt = 0;
         return;
@@ -69,7 +72,7 @@ static void faultScan(void) {
         if ((int16) (dif * 2) > sum)
             faultFlags |= FAULT_ENC_SKEW; // 差 > 50%
         else
-            faultFlags &= (uint8) (~FAULT_ENC_SKEW);
+            faultFlags &= (uint16) (~FAULT_ENC_SKEW);
     }
 
     if (setSpeed > 150 && aL < 8 && aR < 8) { // 有指令但两轮几乎不转
@@ -78,8 +81,31 @@ static void faultScan(void) {
     } else
         stallCnt = 0;
 
-    /* 致命故障：编码器掉线会让速度环正反馈飞车，必须立即停车 */
-    if (faultFlags & (FAULT_ENC_L_DOWN | FAULT_ENC_R_DOWN | FAULT_STALL)) {
+    /* ---- PID 异常 ---- */
+    baseL = pidOutL; // 增量式 PID 的实际输出（-10000~+10000）
+    baseR = pidOutR;
+
+    if (func_abs(baseL) >= 9800 || func_abs(baseR) >= 9800) { // 输出打满 1 s：车却跑不动
+        if (satCnt < 250) satCnt++;
+        if (satCnt >= 200) faultFlags |= FAULT_PID_SAT;
+    } else
+        satCnt = 0;
+
+    /* 正反馈：有明显输出，编码器却往反方向计数。
+     * 这是速度环最危险的一种故障（接反 / 编码器 A/B 反），不停车会一路加速。 */
+    if (setSpeed > 60 && func_abs(baseL) > 1500 && aL > 5 && ((int32) baseL * (int32) encoderL) < 0) {
+        if (revCntL < 250) revCntL++;
+        if (revCntL >= 50) faultFlags |= FAULT_PID_REV; // 250 ms
+    } else
+        revCntL = 0;
+    if (setSpeed > 60 && func_abs(baseR) > 1500 && aR > 5 && ((int32) baseR * (int32) encoderR) < 0) {
+        if (revCntR < 250) revCntR++;
+        if (revCntR >= 50) faultFlags |= FAULT_PID_REV;
+    } else
+        revCntR = 0;
+
+    /* 致命故障：编码器掉线 / 堵转 / PID 饱和 / 正反馈，都必须立即停车 */
+    if (faultFlags & (FAULT_ENC_L_DOWN | FAULT_ENC_R_DOWN | FAULT_STALL | FAULT_PID_SAT | FAULT_PID_REV)) {
         faultFlags |= FAULT_STOPPED;
         stop = 1;
         if (raceState == RACE_RUNNING || raceState == RACE_BRAKING) raceState = RACE_STOPPED;
@@ -133,6 +159,10 @@ int16 motorPIDCalculate(PID_t *pid, int16 target, int16 actual) {
     base = (int32) pid->base + delta_u / 100;
     base = func_limit(base, pid->max_out);
     pid->base = (int16) base;
+    if (pid->which == 0)
+        pidOutL = (int16) base; // 左轮
+    else if (pid->which == 1)
+        pidOutR = (int16) base; // 右轮
     gpio_set_level((gpio_pin_enum) pid->which ? motorDirR : motorDirL, base >= 0);
     return (int16) func_abs(base);
 }

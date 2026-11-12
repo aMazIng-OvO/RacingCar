@@ -33,9 +33,16 @@
 #define FAULT_IMAGE_DARK   0x20   // 图像几乎没有对比（全局阈值退回 128）
 #define FAULT_NO_BORDER    0x40   // 连续多帧看不到赛道边界
 #define FAULT_STOPPED      0x80   // 因故障被强制停车
+#define FAULT_PID_SAT      0x0100 // PID 输出长时间打满（占空比饱和，车却跑不动）
+#define FAULT_PID_REV      0x0200 // PID 输出与编码器反馈方向相反（速度环正反馈，飞车前兆）
 
-extern volatile uint8 faultFlags;
+extern volatile uint16 faultFlags;
 void faultReset(void);
+
+/* 蜂鸣器电平：报警时输出 BEEP_ON_LEVEL。
+ * 若报警时没有声音（或一直响），把这两个值对调即可。 */
+#define BEEP_ON_LEVEL      1
+#define BEEP_OFF_LEVEL     0
 
 #define FORWARD 114
 #define CROSS 514

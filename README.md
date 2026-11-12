@@ -230,12 +230,15 @@ Program Size: data=107.6  edata+hdata=8192  xdata=56294  const=50701  code=97140
 | `FAULT_NO_FRAME` | 0x10 | 约 1 s 无新帧（掉帧 / DMA 异常） | `main.c` 帧看门狗 | **是** |
 | `FAULT_IMAGE_DARK` | 0x20 | 全局阈值退回 128（采样区几乎没有明暗差） | `main.c` 每帧 | 否 |
 | `FAULT_NO_BORDER` | 0x40 | 连续约 2 s 两侧边界都为 0 | `main.c` 每帧 | 否 |
-| `FAULT_STOPPED` | 0x80 | 因致命故障被强制停车 | 上述致命项 | — |
+| `FAULT_PID_SAT` | 0x0100 | PID 输出打满 ≥98% 持续 1 s（车跑不动：堵转 / 欠压 / 参数异常） | `Motor.c` 5 ms 中断 | **是** |
+| `FAULT_PID_REV` | 0x0200 | PID 输出与编码器计数方向相反持续 250 ms（速度环正反馈，飞车前兆） | 同上 | **是** |
+| `FAULT_STOPPED` | 0x80 | 因致命故障被强制停车（同时驱动蜂鸣器响 150 ms） | 上述致命项 | — |
 
 **使用约定**
 
 - 发车（TOP）时调用 `faultReset()` 清零；**停车时保留**，方便赛后回看是哪种故障导致的停。
 - 编码器类检测有 **1 秒宽限期**（发车后 PID 起转、齿轮间隙需要时间），避免起步误判。
+- 出现致命故障时，除停车外还会驱动蜂鸣器响 **150 ms**（`IO_P90`）。蜂鸣器电平由 `Motor.h` 的 `BEEP_ON_LEVEL / BEEP_OFF_LEVEL` 决定，若报警无声或长鸣，对调这两个宏即可。
 - 检测逻辑只读 `encoderL/R`、`setSpeed`、`threshold`、`LRoadCount/RRoadCount`，**不改变任何控制量**；唯一的动作是致命故障时置 `stop` 并切到 `RACE_STOPPED`。
 - 屏幕 `ERR` 只在状态或故障位变化时刷新一次，不占运行时间。
 

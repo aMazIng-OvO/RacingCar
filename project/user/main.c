@@ -303,7 +303,7 @@ void main(void) {
     while (1) {
         static uint16 noFrameTicks = 0;  // 帧看门狗：2 ms 节拍累计，约 1 s 无新帧则安全停车
         static uint8 lastRaceState = RACE_IDLE; // 用于检测 raceState 变化并刷新屏幕提示（初始 IDLE，保留发车提示）
-        static uint8 lastFault = 0;        // 故障位变化时也刷一次屏
+        static uint16 lastFault = 0;       // 故障位变化时也刷一次屏（16 位，含 PID 异常位）
         static uint8 borderLost = 0;       // 连续看不到边界的帧数
         /* 按键与里程判定不依赖相机帧：摄像头停帧时仍能急停 / 收车 */
         uint8 tBtn = gpio_get_level(IO_PB2), bBtn = gpio_get_level(IO_PB3), sBtn = gpio_get_level(IO_PB4);
@@ -333,6 +333,12 @@ void main(void) {
                 ips200_show_string(0, 130, "READY");
             ips200_show_string(0, 160, "ERR:");
             ips200_show_int16(64, 160, (int16) faultFlags);
+            /* 致命故障报警：只在故障位变化时响一次（150 ms），不影响后续控制 */
+            if (faultFlags & FAULT_STOPPED) {
+                gpio_set_level(IO_P90, BEEP_ON_LEVEL);
+                system_delay_ms(150);
+                gpio_set_level(IO_P90, BEEP_OFF_LEVEL);
+            }
         }
 
         if (frameBusy) {
@@ -343,13 +349,13 @@ void main(void) {
                 if (threshold == 128)
                     faultFlags |= FAULT_IMAGE_DARK; // 采样区几乎没有明暗差
                 else
-                    faultFlags &= (uint8) (~FAULT_IMAGE_DARK);
+                    faultFlags &= (uint16) (~FAULT_IMAGE_DARK);
                 if (!LRoadCount && !RRoadCount) {
                     if (borderLost < 250) borderLost++;
                     if (borderLost >= 200) faultFlags |= FAULT_NO_BORDER; // 约 2 s 看不到赛道
                 } else {
                     borderLost = 0;
-                    faultFlags &= (uint8) (~FAULT_NO_BORDER);
+                    faultFlags &= (uint16) (~FAULT_NO_BORDER);
                 }
 
                 if (ENABLE_CROSS && (RUN_MODE == CROSS ||
