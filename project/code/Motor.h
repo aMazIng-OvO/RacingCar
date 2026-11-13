@@ -113,10 +113,15 @@ volatile extern int16 setSpeed, handle, encoderL, encoderR;
  * 一直加到 MOTOR_RAMP_MAX 为止。用来找"刚好能让轮子转起来"的临界占空比：
  *   从按 B2 到轮子开始转，约经过 t 秒 → 临界值 ≈ 10% + 20% × t
  * 找到之后把本宏改回 0，并用 MOTOR_RUN_DUTY 固定在该值上。 */
-#define MOTOR_DUTY_RAMP        1
+#define MOTOR_DUTY_RAMP        0      // 0 = 不做爬坡，直接按 MOTOR_RUN_DUTY 固定输出
 #define MOTOR_RAMP_START       1000   // 10%
 #define MOTOR_RAMP_MAX         6000   // 60%（够高，保证一定能转）
 #define MOTOR_RAMP_STEP        10     // 每 5 ms +0.1%  → 约 20%/秒
+
+/* 开环固定巡航占空比：地面绝对水平、不需要爬坡，直接给一个「刚能稳定转起来」的值。
+ * 14%（1400）实测轮子不转，30%（3000）能跑；这里取中间偏下，作为最慢稳定档。
+ * 若仍不转 → 2500 / 3000；若嫌快 → 2000。 */
+#define MOTOR_RUN_DUTY         2200
 
 /* ===== 起跑助推 =====
  * 发车后先用固定占空比推一段时间，破开静摩擦再交给 PID。

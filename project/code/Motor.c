@@ -240,8 +240,9 @@ static void pitHandler() {
         pwm_set_duty(motorPwmR, rampDuty);
         pwm_set_duty(motorPwmL, rampDuty);
 #else
-        pwm_set_duty(motorPwmR, (uint16) func_limit_ab((int32) RSetSpeed * MOTOR_DUTY_PER_UNIT, 0, MOTOR_DUTY_LIMIT));
-        pwm_set_duty(motorPwmL, (uint16) func_limit_ab((int32) LSetSpeed * MOTOR_DUTY_PER_UNIT, 0, MOTOR_DUTY_LIMIT));
+        /* 固定占空比：地面水平，不需要按曲率调速，速度恒定且最慢 */
+        pwm_set_duty(motorPwmR, MOTOR_RUN_DUTY);
+        pwm_set_duty(motorPwmL, MOTOR_RUN_DUTY);
 #endif
 #else
         pwm_set_duty(motorPwmR, motorPIDCalculate(&motorRPID, RSetSpeed, encoderR));
