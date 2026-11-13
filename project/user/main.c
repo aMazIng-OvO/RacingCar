@@ -55,26 +55,32 @@
 #define TEST_OPEN_LOOP     0
 #define TEST_OPEN_DUTY     1500    // 0~10000，1500 = 15% 占空比
 
+
 int16 LCorner, RCorner, centerLineCount, RUN_MODE = FORWARD;
 volatile int16 LRoadCount = expRoadCount, RRoadCount = expRoadCount; //中断里做出界判断，需要 volatile
-static int16 imBtn, borderInTriggerDistance = 25;
+static int16 borderInTriggerDistance = 25;
 volatile uint8 borderIn; //主循环写、中断读
-uint8 switch1, switch2, ALONG = ALONG_R, topBtn, bottomBtn;
+uint8 switch1, switch2, ALONG = ALONG_R;
 Point centerLine[expRoadCount], LRoad[expRoadCount], RRoad[expRoadCount];
 extern int16 currentDuty;
-int16 data i;
 
 /* 8 组整定参数：{舵机增益 c1, 前瞻点序号 c3, 弯道限速系数 c4, 直道限速 c5}
- * 拨码 SW1/SW2 选择基址（0/2/4/6），TOP 取同组奇数档、BOTTOM 取偶数档 */
+ *   c1：每 1 度图像角度对应的舵机 duty = c1 / STEER_DUTY_DIV（见 Motor.h）
+ *   c3：前瞻点序号，中线重采样间距 2 像素，c3 = 24 即约 48 像素前瞻
+ *   c4：侧向加速度上限，弯道目标速度 v = sqrt(R · c4)
+ *       v 的单位是「脉冲 / 5 ms」，R 的单位是去畸变后的像素；
+ *       c4 = 2000 约对应 0.67 g（PULSE_PER_METER = 34600、1 像素 ≈ 1 cm 时）
+ *   c5：直道目标速度上限，单位与 setSpeed 一致，最终再由 SPEED_LIMIT 封顶
+ * 拨码 SW1/SW2 选择基址（0/2/4/6），每组的奇数档（更激进）被选为当前档位。 */
 static const int16 speedSet[8][4] = {
-    {260, 26, 4500, 520}, // 1
-    {200, 22, 4000, 300}, // 2
-    {210, 23, 4000, 320}, // 3
-    {220, 23, 4000, 340}, // 4
-    {230, 24, 4000, 360}, // 5
-    {240, 24, 4000, 380}, // 6
-    {250, 25, 4000, 450}, // 7
-    {260, 25, 4000, 500}  // 8
+    {260, 26, 2400, 400}, // 1
+    {200, 22, 2000, 300}, // 2
+    {210, 23, 2000, 320}, // 3
+    {220, 23, 2000, 340}, // 4
+    {230, 24, 2000, 360}, // 5
+    {240, 24, 2000, 380}, // 6
+    {250, 25, 2000, 400}, // 7
+    {260, 25, 2000, 400}  // 8
 };
 
 static void applySpeedSet(uint8 idx) {
@@ -83,26 +89,31 @@ static void applySpeedSet(uint8 idx) {
 
 void loadRoad();
 
-/* ===== 按键模块（B2/B3/B4，低电平有效，主循环 1 ms 调用一次） =====
- * 20 ms 消抖，提供「按下沿 / 松开沿」事件，B4 支持长按。
- *   B2 = 发车      B3 = 紧急停车      B4：短按 = 舵机自检，长按 ≥2 s = 标定一圈 */
+/* ===== 按键模块（B2/B3/B4，低电平有效） =====
+ * 时间基准是控制中断维护的 msTick，不是循环次数：
+ * 主循环处理一帧图像要 5~10 ms，用循环次数计时会把 20 ms 消抖拉成上百毫秒、
+ * 把 2 s 长按拉成十几秒，现场表现就是"按键失效"。
+ *   B2：短按 = 发车（需已识别到赛道）    长按 1 s = 强制发车
+ *   B3：短按 = 紧急停车（任何状态都生效）
+ *   B4：短按 = 舵机自检                  长按 2 s = 标定一圈 */
 #define BTN_B2          0x01
 #define BTN_B3          0x02
 #define BTN_B4          0x04
-#define BTN_DEBOUNCE    5       // 连续 5 次采样一致才认（主循环约 1~10 ms，5 次足够消抖）
-#define BTN_LONG_MS     2000    // B4 长按阈值（ms）
+#define BTN_DEBOUNCE_MS 20      // 连续 20 ms 采样一致才认
+#define BTN_LONG_MS     2000    // B4 长按阈值
 
 static uint8 btnDown = 0;        // 稳定状态位图（1 = 按下）
-static uint8 btnDebCnt = 0;      // 消抖计数
-static uint16 btnHoldMs = 0;     // B4 按住时长
+static uint16 btnChangeMs = 0;   // 最近一次采样出现差异的起始时刻
+static uint16 btnDownMs = 0;     // 确认按下的时刻
 static uint8 btnLongFired = 0;   // B4 本次按住已触发过长按
-static uint8 btnLastWasLong = 0; // 上一次 B4 松开时是否为长按
 static uint8 btnPressEdge = 0;   // 本次扫描刚按下的位
-static uint8 btnReleaseEdge = 0;  // 本次扫描刚松开的位
+static uint8 btnReleaseEdge = 0; // 本次扫描刚松开的位
 static uint8 btnLongEvent = 0;   // B4 达到长按阈值（一次性）
+static uint8 btnShortB4 = 0;     // B4 短按（松开时判定，一次性）
 
 static void btnScan(void) {
     uint8 raw = 0, changed;
+    uint16 now = msTick, held;
 
     btnPressEdge = 0;
     btnReleaseEdge = 0;
@@ -111,27 +122,25 @@ static void btnScan(void) {
     if (!gpio_get_level(IO_PB4)) raw |= BTN_B4;
 
     if (raw != btnDown) {
-        if (++btnDebCnt >= BTN_DEBOUNCE) {
-            btnDebCnt = 0;
+        /* 采样与稳定值不同：从第一次出现差异起计时，满 20 ms 才确认。
+         * 中途抖回稳定值会走下面的 else 分支把计时清零，所以不会误触发。 */
+        if ((uint16) (now - btnChangeMs) >= BTN_DEBOUNCE_MS) {
             changed = (uint8) (raw ^ btnDown);
             btnPressEdge = (uint8) (changed & raw);        // 松 → 按
             btnReleaseEdge = (uint8) (changed & btnDown);  // 按 → 松
+            if (btnReleaseEdge & BTN_B4) btnShortB4 = (uint8) !btnLongFired;
+            btnChangeMs = now;
+            btnDownMs = now;
             btnDown = raw;
+            btnLongFired = 0;
         }
     } else {
-        btnDebCnt = 0;
-    }
-
-    if (btnDown & BTN_B4) { // 长按计时
-        if (btnHoldMs < BTN_LONG_MS) btnHoldMs++;
-        if (btnHoldMs >= BTN_LONG_MS && !btnLongFired) {
+        btnChangeMs = now;
+        held = (uint16) (now - btnDownMs);
+        if ((btnDown & BTN_B4) && held >= BTN_LONG_MS && !btnLongFired) {
             btnLongFired = 1;
             btnLongEvent = 1;
         }
-    } else {
-        btnLastWasLong = (uint8) (btnHoldMs >= BTN_LONG_MS);
-        btnHoldMs = 0;
-        btnLongFired = 0;
     }
 }
 
@@ -150,7 +159,28 @@ void elementReset(void) {
     centerLineCount = 0;
     LCorner = RCorner = 0;
     LRoadCount = RRoadCount = expRoadCount;
+    outOfTrack = 0;
     gpio_set_level(IO_P90, 0);
+}
+
+/* ===== USB CDC 调试输出 =====
+ * 屏幕已从硬件上移除，里程标定、阈值、故障码全部靠 USB CDC 读取（debug_init 已打开）。
+ * 串口没有连接时 usb_cdc_write_buffer 会立即返回，不占运行时间。
+ *   待发车：每 250 ms 打印全部读数，推车 1 米看 ODO 的增量即可标定 PULSE_PER_METER
+ *   跑车中：每 1 s 打印一行，确认目标速度、实际速度、占空比与故障码 */
+static void debugReport(uint8 running) {
+    static uint16 lastMs = 0;
+    uint16 now = msTick;
+    int32 odo;
+
+    if ((uint16) (now - lastMs) < (uint16) (running ? 1000 : 250)) return;
+    lastMs = now;
+    interrupt_global_disable();
+    odo = odometer;
+    interrupt_global_enable();
+    printf("ODO=%ld L=%d R=%d C=%d THR=%d MODE=%d AL=%d STA=%d ERR=%d SPD=%d DS=%d DUTY=%d\n",
+           odo, LRoadCount, RRoadCount, centerLineCount, threshold,
+           RUN_MODE, ALONG, trackIsOn(), faultFlags, currentSpeed, setSpeed, currentDuty);
 }
 
 void main(void) {
@@ -227,6 +257,7 @@ void main(void) {
     }
 #endif
     //gpio_init(IO_P04, GPO, 0, GPO_PUSH_PULL); //示波器
+    frameBusy = 0;   // 丢弃舵机自检期间累积的旧帧，阈值必须按当前画面估计
     { //等 DMA 中断搬入第一帧完整快照再估阈值（带超时，防止摄像头异常时死等）
         uint16 wait = 0;
         while (!frameBusy && ++wait < 20000);
@@ -250,27 +281,20 @@ void main(void) {
     stopInit();
     frameBusy = 0;   // 丢弃选档期间累积的旧帧，第一拍处理发车后的当前画面
     while (1) {
-        static uint16 noFrameTicks = 0;  // 帧看门狗：2 ms 节拍累计，约 1 s 无新帧则安全停车
-        static uint16 elemTicks = 0;       // 元素状态机停留帧数（超时兜底）
+        static uint16 lastFrameMs = 0;   // 最近一次收到完整帧的时刻
+        static uint16 elemEnterMs = 0;   // 进入元素的时刻
         /* 按键与里程判定不依赖相机帧：摄像头停帧时仍能急停 / 收车 */
         btnScan();
         /* 按键确认反馈：任意一个键按下（边沿）→ 蓝灯亮 60 ms。
-         * 用于在没有屏幕的情况下确认"按键到底有没有被读到" */
-        if (btnPressEdge) {
-            gpio_set_level(STATUS_LED_PIN, STATUS_LED_ON);
-            system_delay_ms(60);
-            gpio_set_level(STATUS_LED_PIN, STATUS_LED_OFF);
-        }
-        /* B2：先做赛道检测，在赛道上才发车；不在赛道则蓝灯慢闪提示 */
+         * 非阻塞：只设一个保持时间，由 trackMonitor 让出 LED 驱动权。
+         * 原来的 system_delay_ms(60) 会在发车瞬间白丢约 10 帧图像。 */
+        if (btnPressEdge) trackLedHold(60);
+        /* B2：发车（完赛或急停后也可重新发车）。
+         * 与参考实现一致，发车不设赛道门槛：赛道状态只做指示，不阻断发车。 */
         if (btnPressEdge & BTN_B2) {
             if (raceState == RACE_IDLE || raceState == RACE_STOPPED) {
-                if (trackIsOn()) {
-                    trackSetNoTrackAlarm(0);
-                    faultReset(); // 每次发车清空上一轮故障位（停车时保留，便于赛后查看原因）
-                    raceStart();
-                } else {
-                    trackSetNoTrackAlarm(1); // 不在赛道：慢闪，不发车
-                }
+                faultReset(); // 每次发车清空上一轮故障位（停车时保留，便于赛后查看原因）
+                raceStart();
             }
         }
         /* B3：紧急停车（不再限状态，任何时刻按下都停，避免"跑了停不下来"） */
@@ -283,15 +307,27 @@ void main(void) {
             btnLongEvent = 0;
             if (raceState == RACE_IDLE) raceSetLap();
         }
-        /* B4 短按（松开时判定，且本次不是长按）：舵机左右各摆 15° */
-        if ((btnReleaseEdge & BTN_B4) && !btnLastWasLong) servoSelfTest();
+        /* B4 短按（松开时判定，且本次不是长按）：舵机左右各摆 15°。
+         * 只在停车状态执行：自检要占用 0.9 秒，行驶中做这件事等于闭眼开车。 */
+        if (btnShortB4) {
+            btnShortB4 = 0;
+            if (raceState == RACE_IDLE || raceState == RACE_STOPPED) servoSelfTest();
+        }
         raceTask();
 
         trackMonitor(); // 蓝灯：故障常亮 / 正向快闪 / 反向常亮 / 静止熄灭
 
         if (frameBusy) {
-            noFrameTicks = 0;   // 收到完整帧，喂狗
+            lastFrameMs = msTick;   // 收到完整帧，喂狗
             loadRoad();
+            /* 出界判定放在这里：此刻快照不会被 DMA 搬运覆盖，读像素是安全的；
+             * 结论交给控制中断做 15 ms 消抖，控制中断不再直接访问整帧图像。
+             * 判据与参考实现一致：两侧边界全丢，或 5 个采样点全暗。 */
+            trackEvaluate();        // 用同一份边界点数更新赛道状态，供发车许可与蓝灯使用
+            outOfTrack = (uint8) ((!LRoadCount && !RRoadCount) ||
+                                  (mt9v03x_frame[84][95] < threshold && mt9v03x_frame[88][47] < threshold &&
+                                   mt9v03x_frame[87][141] < threshold && mt9v03x_frame[75][120] < threshold &&
+                                   mt9v03x_frame[74][64] < threshold));
             if (raceState == RACE_RUNNING || raceState == RACE_BRAKING) {
                 if (ENABLE_CROSS && (RUN_MODE == CROSS ||
                                      (RUN_MODE == FORWARD && ((RCorner && RRoadCount > 2) || (LCorner && LRoadCount > 2)) &&
@@ -313,25 +349,27 @@ void main(void) {
                 } else
                     alongLine(centerLine, centerLineCount, getAimPos());
 
-                /* A3：元素状态机超时兜底——卡在十字/环岛超过 300 帧（约 3 s）就强制
-                 * 回 FORWARD，否则会一直用固定 aim 打角、全速冲出赛道 */
+                /* 元素超时兜底：卡在十字/环岛超过 8 s 就强制回 FORWARD，
+                 * 否则会一直用固定 aim 打角、全速冲出赛道。
+                 * 计时按真实毫秒而不是帧数，帧率波动时阈值不会跟着漂。 */
                 if (RUN_MODE == FORWARD)
-                    elemTicks = 0;
-                else if (++elemTicks > 300) {
-                    elemTicks = 0;
+                    elemEnterMs = msTick;
+                else if ((uint16) (msTick - elemEnterMs) > 8000) {
+                    elemEnterMs = msTick;
                     elementReset();
                 }
-            } else if (raceState == RACE_IDLE) {
-                raceShow();
+            } else {
+                elemEnterMs = msTick;
             }
             frameBusy = 0;   // 消费完毕，允许 ISR 搬入下一帧
-        } else if (++noFrameTicks > 1000) {
+        } else if ((uint16) (msTick - lastFrameMs) > 1000) {
             /* 稳定优先：摄像头掉帧 / DMA 异常时，不允许保持上一拍打角继续全速跑 */
-            noFrameTicks = 0;
+            lastFrameMs = msTick;
             // 约 1 s 无新帧：紧急停车（不置故障位，避免与 PID 异常混淆）
             if (raceState == RACE_RUNNING || raceState == RACE_BRAKING) raceStopNow();
         }
-        system_delay_ms(1);   // 主循环 1 ms 节拍：按键去抖 + 帧看门狗计时基准（越小越不压帧延迟）
+        debugReport(raceState == RACE_RUNNING || raceState == RACE_BRAKING);
+        system_delay_ms(1);   // 主循环 1 ms 节拍只用于让出 CPU，所有计时都以 msTick 为准
     }
 }
 
@@ -343,10 +381,6 @@ void loadRoad() {
     LRoadCount = expRoadCount, RRoadCount = expRoadCount;
     getLBorder(LRoad, LStart, &LRoadCount);
     getRBorder(RRoad, RStart, &RRoadCount);
-    /* 起点没找到（getLStart/getRStart 返回 0,0）时把计数清 0。
-     * 否则计数会停在 expRoadCount(100)，赛道识别会误判成"一直在赛道上"。 */
-    if (!LStart.x && !LStart.y) LRoadCount = 0;
-    if (!RStart.x && !RStart.y) RRoadCount = 0;
     LBorderCount = func_limit_ab(LRoadCount, 0, expRoadCount);
     memcpy(LBorder, LRoad, LBorderCount * sizeof(Point));
     RBorderCount = func_limit_ab(RRoadCount, 0, expRoadCount);
@@ -360,8 +394,8 @@ void loadRoad() {
     LCorner = findCorner(LRoad, LRoadCount, 0);
     RCorner = findCorner(RRoad, RRoadCount, 0);
     /* borderIn：左右各自独立判定，标志绝不跨分支复用；索引前先确认 count>0。
-     * B4：只在普通循迹（FORWARD）时重算——环岛/十字阶段由元素函数维持 borderIn=1，
-     * 若每帧都在这里覆盖，alongLine 的入弯减速（slow）就永远拿不到 1。 */
+     * 只在普通循迹（FORWARD）时重算——环岛/十字阶段由元素函数维持 borderIn=1，
+     * 若每帧都在这里覆盖，setServoDuty 的入弯减速就永远拿不到 1。 */
     if (RUN_MODE == FORWARD) {
         for (idx = 0; idx < LRoadCount; idx += 2)
             if (LRoad[idx].y > 94) { leftFound = 1; break; }

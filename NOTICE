@@ -22,8 +22,8 @@ libraries/ 目录整体来自「逐飞科技 STC32G144K 开源库」（V3.2.5）
       - 2026-11-05（PR #1，TBssjq）：修正 16 位截断、sqrt 起始位 1L<<20 → 1L<<30
       - 2026-11-05：文件由 GBK 转存为 UTF-8
   libraries/zf_common/zf_common_headfile.h
-      - 第 111~116 行追加 Cross.h / Image.h / LRound.h / RRound.h /
-        Motor.h / Stop.h 六个应用层头文件引用，使 project/ 下文件可统一编译
+      - 第 111~117 行追加 Cross.h / Image.h / LRound.h / RRound.h /
+        Motor.h / Stop.h / Track.h 七个应用层头文件引用，使 project/ 下文件可统一编译
 
 从上游模板派生、由本项目维护的文件如下：
 
@@ -39,16 +39,17 @@ libraries/ 目录整体来自「逐飞科技 STC32G144K 开源库」（V3.2.5）
   project/code/Cross.c / Cross.h
   project/code/LRound.c / LRound.h
   project/code/RRound.c / RRound.h
+  project/code/Track.c / Track.h         （新增）
   project/mdk/seekfree.uvproj          （文件列表增加上述新增文件）
 
 主要改动概要：
   1. C251 中断向量限制（0~31）的工程化处理：扩展中断改用局部编号 + A51 跳转表；
-  2. 图像双缓冲：采集缓冲与算法快照分离，避免 170 fps 下的帧撕裂；
-  3. 新增里程发车/标定/定点停车状态机（Stop.c）；
-  4. 删除原项目的斑马线、障碍块模块与 IPS200 图像叠加调试缓冲（释放 22.5 KB XRAM）。
-  5. 2026-11-05 稳定优先调整：整帧搬运放回 DMA 完成中断（frameBusy 门控保证帧原子性）、
-     中断优先级 TIM1=3 / LCM_DMA=1、全局速度天花板 SAFE_SPEED_CEILING、
-     刹车提前量 200 cm、约 1 s 帧看门狗安全停车（详见 README 第 12 节）。
+  2. 图像双缓冲：采集缓冲与算法快照分离，整帧搬运在 DMA 完成中断内完成并用 frameBusy 门控，
+     中断优先级设为 TIM1 = 3、LCM_DMA = 1，控制中断可抢占搬运；
+  3. 新增里程发车 / 标定 / 定点停车状态机（Stop.c）与赛道识别模块（Track.c）；
+  4. 删除原项目的斑马线、障碍块模块与 IPS200 图像叠加调试缓冲（释放 22.5 KB XRAM）；
+  5. 控制量的写入收敛到 setSpeedCommand() 单一入口，速度上限 SPEED_LIMIT 统一封顶，
+     异常检测与出界保护的判定位置与消抖方式见 REVIEW.md。
 
 三、许可证
 ----------

@@ -10,18 +10,26 @@
 #define steerMid 2975
 
 volatile int16 encoderL, encoderR, setSpeed = 0, handle = 0, duty = 0;
+volatile int16 desiredSpeed = 0;
+volatile uint16 msTick = 0;
+volatile uint8 outOfTrack = 0;
 const int16 tani[33];
-extern int16 RUN_MODE;
-extern uint8 switch1, ALONG;
+extern uint8 switch1;             // 仅 DEBUG_MODE=1 的画面叠加使用
 extern volatile uint8 borderIn;
 static uint8 DEVICE_H = 18;
-volatile int8 slow, stop;
+volatile int8 stop;
 int16 c1, c3, c4, c5; //仅保留实际参与运算的整定参数
 volatile int16 R, LSetSpeed, RSetSpeed, enableDifSpeed = 1;
 volatile int16 currentSpeed;
 int16 currentDuty;
 extern volatile int32 odometer;
-extern volatile int16 LRoadCount, RRoadCount;
+
+void setSpeedCommand(int16 v) {
+    v = (int16) func_limit_ab((int32) v, 0, SPEED_LIMIT);
+    interrupt_global_disable();
+    desiredSpeed = v;
+    interrupt_global_enable();
+}
 
 /* ===== 异常状态检测（编码器掉线 + PID 异常 + 紧急停车） ===== */
 volatile uint16 faultFlags = 0;
@@ -32,6 +40,13 @@ static uint8 outCnt = 0;                           //出界判定消抖计数
 static uint16 kickCnt = 0;                         //起跑助推剩余节拍
 static uint16 rampDuty = MOTOR_RAMP_START;         //占空比爬坡当前值（诊断用）
 static int16 pidOutL = 0, pidOutR = 0;             //PID 实际输出，供异常检测读取
+static volatile uint8 servoTestBusy = 0;           //舵机自检进行中：控制中断暂时不写舵机
+
+/* 舵机输出的唯一出口：自检期间由自检函数独占，
+ * 否则控制中断每 5 ms 把舵机拉回中值，自检看起来就是"舵机不动"。 */
+static void steerWrite(int16 d) {
+    if (!servoTestBusy) pwm_set_duty(PWME_CH3P_PA4, (uint16) d);
+}
 
 void faultReset(void) {
     faultFlags = 0;
@@ -84,24 +99,27 @@ static void faultScan(void) {
 
     /* 饱和判定：输出打满 **且** 速度连目标的一半都达不到。
      * 只看输出会误判——大油门起步、上坡、低摩擦时 PID 打满 1 s 是正常现象，
-     * 真正的异常是"打满了却跑不起来"（堵转 / 欠压 / 轮子卡住）。 */
-    if ((func_abs(baseL) >= 9800 || func_abs(baseR) >= 9800) &&
+     * 真正的异常是"打满了却跑不起来"（堵转 / 欠压 / 轮子卡住）。
+     * 判据里的上限必须与 PID 的实际限幅 MOTOR_DUTY_LIMIT 一致，
+     * 否则写成固定的 9800 时，限幅 3100 的工程里这一位永远不可能置起。 */
+    if ((func_abs(baseL) >= (MOTOR_DUTY_LIMIT / 100 * 96) ||
+         func_abs(baseR) >= (MOTOR_DUTY_LIMIT / 100 * 96)) &&
         ((int32) currentSpeed * 2 < (int32) setSpeed)) {
         if (satCnt < 250) satCnt++;
         if (satCnt >= 200) faultFlags |= FAULT_PID_SAT; // 1 s
     } else
         satCnt = 0;
 
-    /* 正反馈：有明显输出，编码器却往反方向计数。
-     * 这是速度环最危险的一种故障（接反 / 编码器 A/B 反），不停车会一路加速。 */
-    if (setSpeed > 60 && func_abs(baseL) > 1500 && aL > 5 &&
-        ((int32) baseL * (int32) encoderL) < 0) {
+    /* 正反馈：给的是正向输出，编码器却往反方向计数。
+     * 这是速度环最危险的一种故障（电机线接反 / 编码器 A/B 反），不停车会一路加速。
+     * 只判「正输出 + 负反馈」这一个方向：负输出 + 正反馈是正常的减速制动，
+     * 原来的乘积判据把它也算进来，弯道减速持续半秒就会误报停车。 */
+    if (setSpeed > 60 && baseL > 1500 && encoderL < -5) {
         if (revCntL < 250) revCntL++;
         if (revCntL >= 100) faultFlags |= FAULT_PID_REV; // 500 ms（起步时轻微后溜不算）
     } else
         revCntL = 0;
-    if (setSpeed > 60 && func_abs(baseR) > 1500 && aR > 5 &&
-        ((int32) baseR * (int32) encoderR) < 0) {
+    if (setSpeed > 60 && baseR > 1500 && encoderR < -5) {
         if (revCntR < 250) revCntR++;
         if (revCntR >= 100) faultFlags |= FAULT_PID_REV;
     } else
@@ -124,6 +142,7 @@ typedef struct {
     int16 llast_error;
     int16 base;
     int16 max_out;
+    int16 min_out;   // 负向限幅：刹车段收窄，避免目标 0 时把车反向驱动
 } PID_t;
 
 PID_t steerPid, motorLPID, motorRPID;
@@ -137,6 +156,7 @@ void PIDInit(PID_t *pid, uint8 which, int16 Kp, int16 Ki, int16 Kd, int16 max_ou
     pid->base = 0;
     pid->which = which;
     pid->max_out = max_out;
+    pid->min_out = (int16) -max_out;
 }
 
 int16 steerPIDCalculate(PID_t *pid, int16 error) {
@@ -160,7 +180,7 @@ int16 motorPIDCalculate(PID_t *pid, int16 target, int16 actual) {
     pid->last_error = err;
     // 先在 32 位上累加再限幅；原来 int16 base 先溢出会导致方向翻转和负占空比
     base = (int32) pid->base + delta_u / 100;
-    base = func_limit(base, pid->max_out);
+    base = func_limit_ab(base, pid->min_out, pid->max_out);
     pid->base = (int16) base;
     if (pid->which == 0)
         pidOutL = (int16) base; // 左轮
@@ -173,6 +193,9 @@ int16 motorPIDCalculate(PID_t *pid, int16 target, int16 actual) {
 
 static void pitHandler() {
     int32 cntR, cntL, avg;
+    int16 diff;
+    msTick += 5;               // 全局毫秒节拍：按键长按、帧看门狗都以它为基准
+    setSpeed = desiredSpeed;   // 本拍唯一一次读取目标速度，之后全部用这个副本
     // 全程 32 位：C251 的 int 只有 16 位，负数左移与两轮求和都会溢出
     cntR = -(int32) encoder_get_count(PWMA_ENCODER) * 2;
     cntL = (int32) encoder_get_count(PWMC_ENCODER) * 2;
@@ -184,14 +207,11 @@ static void pitHandler() {
     currentSpeed = (int16) func_limit(avg, 32767);
     odometer += avg;   // IDLE 下同样累加，供推车标定一圈里程
     faultScan();       // 异常状态检测（只读，不干预控制，除致命故障外）
-    /* 冲出赛道保护：跑车过程中两侧边界全部丢失，或视野内 5 个采样点全暗。
-     * A2：改为连续 3 拍（15 ms）都成立才判定——十字路口 / 环岛中央那片黑区会同时命中
-     * 这 5 个点，原来单拍即停，会在过元素时把车"莫名其妙停死"。 */
+    /* 冲出赛道保护：结论由主循环在处理完一帧后给出（那时快照不会被搬运覆盖），
+     * 这里只对结论做连续 3 拍（15 ms）消抖——十字路口 / 环岛中央那片黑区
+     * 会让采样点同时变暗，单拍即停会在过元素时把车"莫名其妙停死"。 */
     if (raceState == RACE_RUNNING || raceState == RACE_BRAKING) {
-        if ((!LRoadCount && !RRoadCount) ||
-            (mt9v03x_frame[84][95] < threshold && mt9v03x_frame[88][47] < threshold &&
-             mt9v03x_frame[87][141] < threshold && mt9v03x_frame[75][120] < threshold &&
-             mt9v03x_frame[74][64] < threshold)) {
+        if (outOfTrack) {
             if (outCnt < 10) outCnt++;
         } else
             outCnt = 0;
@@ -204,10 +224,14 @@ static void pitHandler() {
 #endif
        ) {
         // 出界保护必须与比赛状态同步，否则 raceTask 永远等不到里程且 TOP 键无法恢复
-        if (!stop && (raceState == RACE_RUNNING || raceState == RACE_BRAKING))
+        if (!stop && (raceState == RACE_RUNNING || raceState == RACE_BRAKING)) {
+#if (!LOW_SPEED_TEST)
+            if (outCnt >= 3) faultFlags |= FAULT_OUT; // 出界与正常完赛分开记录
+#endif
             raceState = RACE_STOPPED;
+        }
         stop = 1;
-        pwm_set_duty(PWME_CH3P_PA4, steerMid);
+        steerWrite(steerMid);
         /* 停车分支直接给 0，不再经过 PID（开环模式下 PID 可能还留着上次的 base） */
         pwm_set_duty(motorPwmR, 0);
         pwm_set_duty(motorPwmL, 0);
@@ -219,20 +243,32 @@ static void pitHandler() {
         gpio_set_level(motorDirL, MOTOR_DIR_FORWARD);
         pwm_set_duty(motorPwmR, MOTOR_KICK_DUTY);
         pwm_set_duty(motorPwmL, MOTOR_KICK_DUTY);
-        pwm_set_duty(PWME_CH3P_PA4, steerMid + steerPIDCalculate(&steerPid, duty));
+        steerWrite(steerMid + steerPIDCalculate(&steerPid, duty));
         if (kickCnt == 0) controlReset(); // 助推结束，PID 从干净状态接管
     } else {
-        pwm_set_duty(PWME_CH3P_PA4, steerMid + steerPIDCalculate(&steerPid, duty));
-        slow = !borderIn ? 1 : (currentSpeed < 350 ? 0 : slow);
-#if (!LOW_SPEED_TEST)
-        // 刹车段速度由 raceTask 锁定，环岛入弯减速不能把它抬回去
-        if (!handle && raceState == RACE_RUNNING && borderIn && currentSpeed > 420 && slow) setSpeed = 200;
-#endif
-        RSetSpeed = setSpeed + (!R || !enableDifSpeed ? 0 : setSpeed * 8 / R);
-        LSetSpeed = setSpeed - (!R || !enableDifSpeed ? 0 : setSpeed * 8 / R);
-        /* 差速后的单轮目标同样限幅，保证「绝对不超过 SPEED_LIMIT」 */
-        RSetSpeed = (int16) func_limit_ab((int32) RSetSpeed, 0, SPEED_LIMIT);
-        LSetSpeed = (int16) func_limit_ab((int32) LSetSpeed, 0, SPEED_LIMIT);
+        steerWrite(steerMid + steerPIDCalculate(&steerPid, duty));
+        /* 差速：曲率半径 |R| 越小，内外轮速差越大。
+         * 差速量按目标速度的比例限幅（最多一半），再把单轮目标夹到 SPEED_LIMIT，
+         * 避免急弯时一侧被上限截断、另一侧继续加速造成的转向突变。 */
+        if (R && enableDifSpeed) {
+            diff = (int16) ((int32) setSpeed * 8 / R);
+            diff = (int16) func_limit(diff, setSpeed / 2);
+            RSetSpeed = (int16) func_limit_ab((int32) setSpeed + diff, 0, SPEED_LIMIT);
+            LSetSpeed = (int16) func_limit_ab((int32) setSpeed - diff, 0, SPEED_LIMIT);
+        } else {
+            RSetSpeed = setSpeed;
+            LSetSpeed = setSpeed;
+        }
+        /* 刹车段的负向限幅要收窄：目标速度已经是 0，实际速度仍为正，
+         * PID 会持续输出负占空比，限幅还是 -10000 时车会从"减速"变成"倒车"，
+         * 定点停车反而退回去。只保留少量反向电流做电子制动。 */
+        if (raceState == RACE_BRAKING) {
+            motorLPID.min_out = -MOTOR_BRAKE_DUTY;
+            motorRPID.min_out = -MOTOR_BRAKE_DUTY;
+        } else {
+            motorLPID.min_out = -MOTOR_DUTY_LIMIT;
+            motorRPID.min_out = -MOTOR_DUTY_LIMIT;
+        }
 #if (MOTOR_OPEN_LOOP)
         /* 开环：不使用编码器反馈，方向固定正转 */
         gpio_set_level(motorDirR, MOTOR_DIR_FORWARD);
@@ -272,39 +308,50 @@ void alongLine(Point roadLine[], int16 count, int16 aimPos) {
     if (switch1)
         ips200_draw_point(roadLine[pos].y, roadLine[pos].x + MT9V03X_H + 40, RGB565_RED);
 #endif
-     setServoDuty(func_limit(d, 32));
+    setServoDuty(d);
 }
 
 void setServoDuty(int8 d) {
     int16 data t, r, ts;
     int32 data v;
-    currentDuty = (int16) d * c1 / 100;
-    t = tani[func_limit_ab(func_abs(currentDuty), 0, 32)];
+    d = (int8) func_limit(d, 30);
+    /* 舵机目标偏移：每 1 度图像角度对应 c1 / STEER_DUTY_DIV 个 duty，
+     * 打满 30 度得到 390 duty，正好落在 STEER_DUTY_LIMIT 以内。
+     * 转向量与横向偏差保持线性，弯道里有比例可言。 */
+    currentDuty = (int16) func_limit_ab((int32) d * c1 / STEER_DUTY_DIV,
+                                        -STEER_DUTY_LIMIT, STEER_DUTY_LIMIT);
 #if (DEBUG_MODE)
     if (switch1) ips200_show_int16(MT9V03X_W / 2, MT9V03X_H + 20, currentDuty);
 #endif
+    /* 曲率限速的 tan 表索引是「角度本身」，不是放大后的 duty。
+     * 原来用 currentDuty 查表，d 一过 13 就固定查 tan(32°)，
+     * 不同弯道算出的限速完全一样，曲率限速等于没接上。 */
+    t = tani[func_limit_ab(func_abs(d), 0, 32)];
     r = !t ? 0 : 20000 / t;
-    // if (borderIn) ts = func_min(c5, 400);
-    // else ts = c5;
     ts = c5;
     // c4 是有符号标定参数，不能用 uint32 强转；sqrt_int 已支持 int32 全域。
     // 刹车段由 raceTask 锁定目标，这里不再按曲率重新抬高速度
     v = sqrt_int((int32) r * (int32) c4);
     if (!handle && raceState != RACE_BRAKING && c4 > 0) {
-        // 稳定优先：先算目标再一次写入 volatile，避免读-改-写被 PIT 插入
+        // 先算目标再一次提交，避免读-改-写被控制中断插入
         int16 target = !r ? ts : (int16) func_min(v, (int32) ts);
+        if (borderIn) target = (int16) ((int32) target * BORDER_IN_SPEED_RATIO / 100);
 #if (LOW_SPEED_TEST)
-        setSpeed = (int16) func_limit_ab((int32) target, 0, LOW_SPEED_TEST_CAP);
-#else
-        setSpeed = (int16) func_limit_ab((int32) target, 0, SPEED_LIMIT);
+        target = (int16) func_min(target, LOW_SPEED_TEST_CAP);
 #endif
+        setSpeedCommand(target);
     }
     R = d < 0 ? -r : r;
-    duty = (int16) d * 12;
+    duty = currentDuty;
 }
 
 int8 getAimPos() {
-    return c3;
+    /* 前瞻随速度自适应：速度越高看得越远，进弯后目标速度下降、前瞻自动收近。
+     * 固定用 c3 时，高速下前瞻不足会来回摆，低速下又反应迟钝。
+     * 中线重采样间距 2 像素，c3 = 24 即约 48 像素前瞻；
+     * currentSpeed 是「脉冲 / 5 ms」，满速 400 时额外加 10 个点（约 20 像素）。 */
+    int16 aim = (int16) c3 + (int16) (currentSpeed / 40);
+    return (int8) func_limit_ab(aim, c3, c3 + 20);
 }
 
 /* 强制停车：直接把两路占空比清零、取消助推，不依赖 PID 状态。
@@ -328,6 +375,7 @@ void motorKickStart(void) {
  * 用来确认舵机供电、信号线、机械行程是否正常；电机完全不参与。 */
 void servoSelfTest(void) {
     int16 i;
+    servoTestBusy = 1;                 // 自检期间独占舵机，控制中断不再写中值
     pwm_init(PWME_CH3P_PA4, 200, steerMid);
     system_delay_ms(200);
     for (i = 0; i <= SERVO_TEST_SWING; i += 25) { // 中值 → 一端
@@ -342,6 +390,7 @@ void servoSelfTest(void) {
         pwm_set_duty(PWME_CH3P_PA4, steerMid - i);
         system_delay_ms(20);
     }
+    servoTestBusy = 0;
 }
 
 void motorInit(int16 c11, int16 c33, int16 c44, int16 c55, int16 c77) {
@@ -350,15 +399,17 @@ void motorInit(int16 c11, int16 c33, int16 c44, int16 c55, int16 c77) {
     c4 = c44;
     c5 = c55;
     if (c77 > 0) DEVICE_H = (uint8) c77; //第7参数：纯跟踪等效轴距，传0则保持默认18
+    /* 转向环：currentDuty 里已经含了 c1 增益，这里的 Kp 只做直通（100 = 1:1），
+     * Kd 提供阻尼，抑制中线抖动直接变成打角抖振。 */
     PIDInit(&steerPid, 3,
-             c1, 0, 50,
-             395);
+             100, 0, 100,
+             STEER_DUTY_LIMIT);
     PIDInit(&motorLPID, 0,
-            3000, 50, 50,
-            MOTOR_DUTY_LIMIT); // 输出上限 = 占空比上限
+             1000, 50, 0,
+             MOTOR_DUTY_LIMIT); // 输出上限 = 占空比上限
     PIDInit(&motorRPID, 1,
-            3000, 50, 50,
-            MOTOR_DUTY_LIMIT);
+             1000, 50, 0,
+             MOTOR_DUTY_LIMIT);
     pwm_init(PWME_CH3P_PA4, 200, steerMid);
     gpio_init(motorDirR, GPO, 1, GPO_PUSH_PULL);
     gpio_init(motorDirL, GPO, 1, GPO_PUSH_PULL);
@@ -380,8 +431,8 @@ void controlReset(void) {
     steerPid.base = steerPid.last_error = steerPid.llast_error = 0;
     motorLPID.base = motorLPID.last_error = motorLPID.llast_error = 0;
     motorRPID.base = motorRPID.last_error = motorRPID.llast_error = 0;
-    setSpeed = duty = handle = 0;
-    R = currentSpeed = currentDuty = 0;
-    slow = 0;
+    setSpeedCommand(0);   // 目标速度只经这一个入口，控制中断下一拍就会读到 0
+    duty = handle = 0;
+    R = currentDuty = 0;
     enableDifSpeed = 1;
 }

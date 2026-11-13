@@ -93,7 +93,7 @@ static int8 check(uint8 x, uint8 y) {
 static int16 getLIndexStart(int16 i) {
     int16 l, r, m;
     l = halfBlock + 1;
-    r = i < HIDE_ROW ? halfW : HIDE_COL_L;
+    r = i < BODY_ROW ? halfW : HIDE_COL_L;
     while (l < r) {
         m = (l + r) >> 1;
         if (mt9v03x_frame[i][m] < LThreshold && mt9v03x_frame[i][func_max(0, m - 8)] < LThreshold && mt9v03x_frame[i][func_max(0, m - 25)] < LThreshold) l = m + 1;
@@ -120,7 +120,7 @@ Point getLStart() {
 
 static int16 getRIndexStart(int16 i) {
     int16 l, r, m;
-    l = i < HIDE_ROW ? halfW : HIDE_COL_R;
+    l = i < BODY_ROW ? halfW : HIDE_COL_R;
     r = 186 - halfBlock;
     while (l < r) {
         m = (l + r + 1) >> 1;

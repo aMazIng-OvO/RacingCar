@@ -75,13 +75,16 @@ void raceSetLap(void) {
     snap = odometer;
     odometer = 0;
     interrupt_global_enable();
-    // 门槛按预期圈长取一半，避免轻微推车/误按把一圈标定成 0.2m
-    if (snap > LAP_PULSE_DEFAULT / 2) {
+    /* 门槛按预期圈长取 1/4：PULSE_PER_METER 在标定前只是占位值，
+     * 取一半时若实际每米脉冲比占位值小，推完一整圈也过不了门槛，
+     * 表现为"长按 B4 只闪 4 下、永远标定不成功"。 */
+    if (snap > LAP_PULSE_DEFAULT / 4) {
         lapPulse = snap;
         // 提前刹车量按"刹车距离 / 一圈总距离"的比例换算，不依赖 PULSE_PER_METER 的绝对值
         brakePulse = lapPulse * BRAKE_DISTANCE_CM / (LAP_DISTANCE_CM + STOP_OFFSET_CM);
         if (brakePulse >= lapPulse) brakePulse = lapPulse >> 3; //参数填错时兜底，避免发车即进刹车段
         lapCalibrated = 1; // 标定成功，才允许发车
+        printf("CALIB OK lap=%ld brake=%ld\n", lapPulse, brakePulse);
         /* 屏幕不可用：标定成功闪 2 下（短促） */
         for (i = 0; i < 2; i++) {
             gpio_set_level(STATUS_LED_PIN, STATUS_LED_ON);
@@ -90,6 +93,7 @@ void raceSetLap(void) {
             system_delay_ms(120);
         }
     } else {
+        printf("CALIB FAIL odo=%ld need>%ld\n", snap, (int32) (LAP_PULSE_DEFAULT / 4));
         /* 推的距离不到门槛：闪 4 下（慢），提示这次没标定成功 */
         for (i = 0; i < 4; i++) {
             gpio_set_level(STATUS_LED_PIN, STATUS_LED_ON);
@@ -116,9 +120,9 @@ void raceTask(void) {
         raceState = RACE_BRAKING;
     }
     if (raceState == RACE_BRAKING) {
-        // 每帧重新压住制动目标，防止 PIT/元素逻辑把 setSpeed 抬回去
+        // 每帧重新压住制动目标，防止元素逻辑把目标速度抬回去
         handle = 1;
-        setSpeed = 0;
+        setSpeedCommand(0);
         // 低速只在已进入停车点附近时才允许提前收车，避免刹车段起点误停
         if (snap >= lapPulse ||
             (snap >= lapPulse - brakePulse / 4 && func_abs(currentSpeed) < 30)) {
@@ -128,24 +132,4 @@ void raceTask(void) {
             gpio_set_level(IO_P90, 1);
         }
     }
-}
-
-void raceShow(void) {
-    /* 屏幕是整机最贵的操作（一次文本刷新要重设窗口 + 走 SPI）。
-     * 待发车阶段按帧调用会把大量算力耗在刷屏上，这里降到约 1/30 帧率（≈5 Hz），
-     * 读数依然跟得上手推车标定，但不再和视觉/控制抢 CPU。 */
-    static uint8 div = 0;
-    int32 snap;
-    if (++div < 30) return;
-    div = 0;
-    interrupt_global_disable();
-    snap = odometer;
-    interrupt_global_enable();
-    ips200_show_string(0, 200, "ODO:");
-    ips200_show_int32(64, 200, snap, 10);
-    ips200_show_string(0, 220, "LAP:");
-    ips200_show_int32(64, 220, lapPulse, 10);
-    ips200_show_string(0, 240, "THR:");
-    ips200_show_int16(64, 240, LThreshold);
-    ips200_show_int16(120, 240, RThreshold);
 }

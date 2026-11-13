@@ -44,6 +44,5 @@ void raceStart(void);       // 发车：清里程、解除刹车
 void raceSetLap(void);      // 把当前里程记为一圈长度（推车标定）
 void raceStopNow(void);     // 急停
 void raceTask(void);        // 每帧调用：里程判定与制动
-void raceShow(void);        // 等待发车状态下在 IPS200 显示里程
 
 #endif //HFK_STC32G144K_STOP_H

@@ -7,27 +7,26 @@
 #include "zf_common_headfile.h"
 #define DEBUG_MODE 0
 
-/* 稳定优先：全局目标速度天花板，单位与 c5 / setSpeed 一致（脉冲 / 5 ms）。
- * 8 档 c5 中 520 / 450 / 500 三档会被压到该值，其余档位不受影响。
- * sqrt_int() 修复后弯道限速变大，在实车重新标定前先由这里兜住上限；
- * 需要提速时只改这一个宏，不必重标 8 组参数。 */
-#define SAFE_SPEED_CEILING 400
+/* 目标速度上限，单位是「脉冲 / 5 ms」。
+ * 8 档 c5 与弯道限速 sqrt(R·c4) 的结果都由它封顶，是唯一的速度天花板。
+ * 换算：上限 = v(m/s) × PULSE_PER_METER / 200。
+ * 例：PULSE_PER_METER 实测 34600 时，400 → 2.31 m/s。
+ * 需要提速只改这一个宏。 */
+#define SPEED_LIMIT        400
 
-/* ===== 目标速度硬上限：不超过 2 m/s =====
- * setSpeed 的单位是「脉冲 / 5 ms」，换算公式：
- *     上限 = v(m/s) × PULSE_PER_METER / 200
- * 例：实测 PULSE_PER_METER = 34600 时，2 m/s → 346。
- * ⚠ PULSE_PER_METER 目前仍是占位值 1000（未实测），直接套公式只有 10，车会完全不动，
- *   所以这里先给实测前的保守值；推车 1 m 标定完 PULSE_PER_METER 后请按公式重算。 */
-#define MAX_SPEED_MPS      2
-#define MAX_SET_SPEED      180   // 调试期先压到很低，确认能稳住再往上提（300 ≈ 原先的最低档满速）
+/* ===== 舵机（200 Hz，steerMid = 2975，1 duty = 0.5 µs） =====
+ * 单边 395 duty = 197.5 µs 脉宽偏移，实际转角取决于舵机自身的行程标定
+ * （常见 0.5 ms/60° 的舵机约 24°）。超过机械限位只会堵转发热，不产生额外转角，
+ * 换舵机后按它的行程重设这个值。 */
+#define STEER_DUTY_LIMIT   395
+/* 舵机换算：duty 偏移 = 图像角度 × c1 / STEER_DUTY_DIV。
+ * c1 = 260 时每 1 度图像角度对应 13 duty，图像角度打满 30 度得到 390 duty。
+ * c1 就是转向增益，8 档参数里 200~260 对应 10~13 duty/度。 */
+#define STEER_DUTY_DIV     20
 
-/* 实际生效的速度上限：目标速度与左右轮目标都按它限幅（稳定后可整体提高） */
-#if (MAX_SET_SPEED < SAFE_SPEED_CEILING)
-#define SPEED_LIMIT        MAX_SET_SPEED
-#else
-#define SPEED_LIMIT        SAFE_SPEED_CEILING
-#endif
+/* 入弯减速：borderIn = 1（车头已进弯）时把目标速度压到该百分比。
+ * 用比例而不是绝对赋值，目标速度不会因此被抬高。 */
+#define BORDER_IN_SPEED_RATIO   70
 
 /* 上电舵机自检摆幅：左右各 15°。
  * 200 Hz 下 1 duty = 0.5 µs；常见舵机 0.5 ms ≈ 60°，故 15° ≈ 250 duty。 */
@@ -49,6 +48,7 @@
 #define FAULT_ENC_R_DOWN   0x0004 // 右编码器无反馈
 #define FAULT_PID_SAT      0x0100 // PID 输出长时间打满且速度不达标（堵转 / 欠压 / 轮子卡住）
 #define FAULT_PID_REV      0x0200 // PID 输出与编码器反馈方向相反（速度环正反馈，飞车前兆）
+#define FAULT_OUT          0x0400 // 出界保护触发（两侧边界全丢 / 视野采样点全暗）
 #define FAULT_STOPPED      0x0001 // 因异常被强制紧急停车（同时蜂鸣报警）
 
 extern volatile uint16 faultFlags;
@@ -80,18 +80,42 @@ void faultReset(void);
 #define ALONG_R 99
 
 volatile extern int16 setSpeed, handle, encoderL, encoderR;
-/* ===== 电机功率硬上限（真正限制"实际速度"的那个） =====
- * MAX_SET_SPEED 限的是「目标速度」，PID 打满时照样能给 100% 占空比；
- * MOTOR_DUTY_LIMIT 直接限制 PID 的输出（= 占空比），无论目标多大、积分怎么积，
- * 电机功率都不会超过这个值。调试期先压到 30%，稳了再逐级提到 6000/8000/10000。 */
-#define MOTOR_DUTY_LIMIT   3100   // 31%：闭环 PID 的占空比硬上限
+
+/* ===== 速度目标的唯一入口 =====
+ * setSpeed 只由 5 ms 控制中断写入（从 desiredSpeed 取一个副本），
+ * 主循环与 raceTask 一律通过 setSpeedCommand() 写 desiredSpeed，
+ * 写入过程关中断，避免 16 位量被控制中断看到半新半旧的值。
+ * 速度上限在这里统一夹紧，任何调用者都提交不出超过 SPEED_LIMIT 的目标。 */
+extern volatile int16 desiredSpeed;
+void setSpeedCommand(int16 v);
+
+/* ===== 全局毫秒节拍（由 5 ms 控制中断累加） =====
+ * 主循环里的按键长按、帧看门狗、打印节流全部以它为准，
+ * 不再用「循环次数 × system_delay_ms(1)」当时间，避免图像处理耗时把计时拉长。 */
+extern volatile uint16 msTick;
+
+/* ===== 出界判定结论（主循环算，控制中断读） =====
+ * 出界要看 5 个像素点与两侧边界点数，这些量在控制中断里读会与帧搬运冲突（读到半帧）。
+ * 改由主循环在处理完一帧后判定一次，控制中断只对这个结论做消抖。 */
+extern volatile uint8 outOfTrack;
+
+/* ===== 电机功率硬上限 =====
+ * 速度目标限制的是「跑多快」，这里限制 PID 能给出的最大占空比。
+ * 取满量程，让 PID 有足够权限追上 SPEED_LIMIT；
+ * 真正的安全边界是 SPEED_LIMIT 与出界保护，不是削功率。 */
+#define MOTOR_DUTY_LIMIT   10000
+
+/* 定点停车刹车段允许的最大反向占空比（电子制动）。
+ * 速度环在目标为 0、实际仍为正时会输出负占空比，不加这一层限幅，
+ * 刹车段会从"减速"变成"倒车"，停车点直接退回去。 */
+#define MOTOR_BRAKE_DUTY   1500
 
 /* ===== 开环模式：电机不跑速度闭环，占空比直接由目标速度线性映射 =====
  *   1 = 开环（编码器只用于蓝灯指示与里程，不参与控制）
  *   0 = 正常闭环 PID
  * 用途：排除"反馈符号/增益不匹配"这一类问题，先确认「给多少占空比就跑多快」。 */
 #define MOTOR_OPEN_LOOP        0
-#define MOTOR_DUTY_PER_UNIT    8    // 每 1 单位 setSpeed 对应的占空比（180 × 8 = 1440，低于 16% 上限）
+#define MOTOR_DUTY_PER_UNIT    8    // 每 1 单位 setSpeed 对应的占空比（400 × 8 = 3200，即 32%）
 
 /* ===== 占空比爬坡诊断（临时） =====
  * 设 1 时：发车后占空比从 MOTOR_RAMP_START 开始，每 5 ms 加 MOTOR_RAMP_STEP，
