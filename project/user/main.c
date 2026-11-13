@@ -59,6 +59,12 @@
 #define VISION_PREVIEW      1
 #define VISION_REFRESH_MS   1000
 
+/* ===== 调试：开环固定占空比（不跑 PID） =====
+ *   1 = 上电即以 TEST_OPEN_DUTY 让两轮慢速前进，仅用蓝灯指示编码器方向，
+ *       用于把「电机/驱动/编码器链路」与「PID 参数」分开排查；0 = 正常比赛流程 */
+#define TEST_OPEN_LOOP     1
+#define TEST_OPEN_DUTY     1500    // 0~10000，1500 = 15% 占空比
+
 int16 LCorner, RCorner, centerLineCount, RUN_MODE = FORWARD;
 volatile int16 LRoadCount = expRoadCount, RRoadCount = expRoadCount; //中断里做出界判断，需要 volatile
 static int16 imBtn, borderInTriggerDistance = 25;
@@ -200,6 +206,33 @@ void main(void) {
         }
     }
     servoSelfTest(); //上电舵机自检：左右各摆约 15°，约 0.9 s（电机不参与）
+#if (TEST_OPEN_LOOP)
+    { /* ===== 调试：开环固定占空比（完全不用 PID） =====
+       * 上电即让两轮以 TEST_OPEN_DUTY 慢速正转，只跑蓝灯指示：
+       *   蓝灯快闪 = 编码器计数递增（方向对）；常亮 = 倒扣；熄灭 = 没计数
+       * 用来把「电机/驱动/编码器接线」和「PID 参数」彻底分开。 */
+        int16 data rawR, data rawL;
+        pwm_init(PWMB_CH3_P76, 17000, 0);          // 右轮 PWM
+        pwm_init(PWMB_CH1_P74, 17000, 0);          // 左轮 PWM
+        gpio_init(IO_P77, GPO, 1, GPO_PUSH_PULL);  // 右轮 DIR：高=正转
+        gpio_init(IO_P75, GPO, 1, GPO_PUSH_PULL);  // 左轮 DIR：高=正转
+        encoder_quad_init(PWMA_ENCODER, PWMA_ENCODER_CH1P_P60, PWMA_ENCODER_CH2P_P62);
+        encoder_quad_init(PWMC_ENCODER, PWMC_ENCODER_CH1P_P40, PWMC_ENCODER_CH2P_P42);
+        system_delay_ms(200);
+        pwm_set_duty(PWMB_CH3_P76, TEST_OPEN_DUTY);
+        pwm_set_duty(PWMB_CH1_P74, TEST_OPEN_DUTY);
+        onTrackFlag = 1; // 本模式不看图像，屏蔽"不在赛道"慢闪
+        while (1) {
+            system_delay_ms(20);
+            rawR = encoder_get_count(PWMA_ENCODER);
+            rawL = encoder_get_count(PWMC_ENCODER);
+            encoder_clear_count(PWMA_ENCODER);
+            encoder_clear_count(PWMC_ENCODER);
+            currentSpeed = (int16) ((-(int32) rawR * 2 + (int32) rawL * 2) / 2);
+            updateStatusLed();
+        }
+    }
+#endif
     //gpio_init(IO_P04, GPO, 0, GPO_PUSH_PULL); //示波器
     { //等 DMA 中断搬入第一帧完整快照再估阈值（带超时，防止摄像头异常时死等）
         uint16 wait = 0;
