@@ -208,8 +208,10 @@ static void pitHandler() {
             raceState = RACE_STOPPED;
         stop = 1;
         pwm_set_duty(PWME_CH3P_PA4, steerMid);
-        pwm_set_duty(motorPwmR, motorPIDCalculate(&motorRPID, 0, encoderR));
-        pwm_set_duty(motorPwmL, motorPIDCalculate(&motorLPID, 0, encoderL));
+        /* 停车分支直接给 0，不再经过 PID（开环模式下 PID 可能还留着上次的 base） */
+        pwm_set_duty(motorPwmR, 0);
+        pwm_set_duty(motorPwmL, 0);
+        kickCnt = 0;
     } else if (kickCnt) {
         /* 起跑助推：固定占空比、固定正转，绕过 PID；300 ms 后交给 PID */
         kickCnt--;
@@ -303,6 +305,17 @@ void setServoDuty(int8 d) {
 
 int8 getAimPos() {
     return c3;
+}
+
+/* 强制停车：直接把两路占空比清零、取消助推，不依赖 PID 状态。
+ * 由 B3 急停调用，保证"按了必停"。 */
+void motorForceStop(void) {
+    stop = 1;
+    kickCnt = 0;
+    pwm_set_duty(motorPwmR, 0);
+    pwm_set_duty(motorPwmL, 0);
+    gpio_set_level(motorDirR, 0);
+    gpio_set_level(motorDirL, 0);
 }
 
 /* ===== 起跑助推 ===== */

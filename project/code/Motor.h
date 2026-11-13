@@ -127,7 +127,9 @@ volatile extern int16 setSpeed, handle, encoderL, encoderR;
  * DIR = 该电平时车轮向前（与编码器计数为正的方向一致）。
  * 实测：DIR=0 时推车向前、电机反而往后退 → 说明 DIR=1 才是前进。
  * （之前看到的"逆时针"是站在车左侧看左轮，前进本来就是逆时针。） */
-#define MOTOR_DIR_FORWARD      1
+/* 开环模式占空比是恒定的、没有 PID 干扰，所以这次观察是干净的：
+ * 发车后车往后退 → DIR=1 对应倒转，前进应为 DIR=0。 */
+#define MOTOR_DIR_FORWARD      0
 
 /* ===== 起跑助推 =====
  * 发车后先用固定占空比推一段时间，破开静摩擦再交给 PID。
@@ -136,6 +138,7 @@ volatile extern int16 setSpeed, handle, encoderL, encoderR;
 #define MOTOR_KICK_DUTY    4500    // 45%：仅起步 300 ms，用来破静摩擦
 
 void motorKickStart(void);  // 由 raceStart() 调用
+void motorForceStop(void);  // 强制停车（B3 急停调用，直接清零占空比）
 void servoSelfTest(void);   // 上电舵机自检：左右各摆 SERVO_TEST_SWING（≈15°）
 void motorInit(int16 c11, int16 c33, int16 c44, int16 c55, int16 c77);
 void setServoDuty(int8 duty);

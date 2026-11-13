@@ -367,7 +367,10 @@ void main(void) {
             }
         }
         /* B3：紧急停车（不再限状态，任何时刻按下都停，避免"跑了停不下来"） */
-        if (btnPressEdge & BTN_B3) raceStopNow();
+        if (btnPressEdge & BTN_B3) {
+            raceStopNow();
+            motorForceStop(); // 双保险：直接清零两路占空比并取消助推
+        }
         /* B4 长按 ≥2 s：标定一圈（按住到阈值时触发一次） */
         if (btnLongEvent) {
             btnLongEvent = 0;
