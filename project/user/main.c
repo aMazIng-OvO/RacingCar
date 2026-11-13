@@ -45,19 +45,9 @@
 #define ROUND_FAR_MAX   11    //对侧边界点数量上限
 #define CROSS_MAX       14    //十字判定：两侧边界点数上限
 
-/* ===== 视觉单测开关（当前为比赛版，已关闭） =====
- * 1 = 纯视觉测试：只跑「采集 → 双缓冲快照 → 爬线 → 去畸变 → 中线 → 拐点」这条链路，
- *     不调用 motorInit()，不启动 5ms 控制 PIT、不初始化 PWM/编码器、不驱动电机与舵机；
- *     仅需「主板 + 摄像头 + 屏幕」即可标定视觉参数。
- * 0 = 正常竞速流程（选档 → 发车 → 循迹/元素/停车）。 */
-#define VISION_ONLY     0
-
-/* 画面刷新策略（实测刷一整屏图像约 190 ms，是全机最贵的操作）：
- *   VISION_PREVIEW = 1 → 显示原始灰度图 + 左边界(蓝)/右边界(红)/中线(绿)，用于标定
- *   VISION_PREVIEW = 0 → 只刷下方数字，纯粹测帧率
- * VISION_REFRESH_MS 为刷新周期（ms）；FPS 已扣除刷屏耗时，不受它影响。 */
-#define VISION_PREVIEW      1
-#define VISION_REFRESH_MS   1000
+/* 调试：上电即自动进入 RUNNING，以开环固定占空比自动前进（不用按 B2）。
+ * 0 = 正常流程（按 B2 发车）。上车前必须改回 0 */
+#define TEST_AUTO_RUN   1
 
 /* ===== 调试：开环固定占空比（不跑 PID） =====
  *   1 = 上电即以 TEST_OPEN_DUTY 让两轮慢速前进，仅用蓝灯指示编码器方向，
@@ -73,12 +63,6 @@ uint8 switch1, switch2, ALONG = ALONG_R, topBtn, bottomBtn;
 Point centerLine[expRoadCount], LRoad[expRoadCount], RRoad[expRoadCount];
 extern int16 currentDuty;
 int16 data i;
-
-#if (VISION_ONLY)
-/* 视觉单测用的 1 ms 计时：只用于统计纯处理帧率（此模式不启动电机 PIT，TIM1 空闲） */
-static volatile uint16 visionMs = 0;
-static void visionTick(void) { visionMs++; }
-#endif
 
 /* 8 组整定参数：{舵机增益 c1, 前瞻点序号 c3, 弯道限速系数 c4, 直道限速 c5}
  * 拨码 SW1/SW2 选择基址（0/2/4/6），TOP 取同组奇数档、BOTTOM 取偶数档 */
@@ -204,14 +188,13 @@ void elementReset(void) {
 void main(void) {
     clock_init(SYSTEM_CLOCK_96M);
     debug_init();
-    ips200_init();
     { //摄像头初始化：最多重试约 3 秒（150 × 20ms）。原写法无限重试，现场无法判断是摄像头故障；
       //但预算太短又会在上电瞬间误判失败，所以留足 3 秒。
         uint16 camRetry = 0;
         while (mt9v03x_init() && ++camRetry < 150) system_delay_ms(20);
         if (camRetry >= 150) {
-            ips200_show_string(0, 120, "CAMERA INIT FAIL");
-            ips200_show_string(0, 140, "check ribbon/power");
+            /* 屏幕已舍弃：摄像头初始化失败时蓝灯常亮，程序停在这里 */
+            gpio_init(STATUS_LED_PIN, GPO, STATUS_LED_ON, GPO_PUSH_PULL);
             while (1) system_delay_ms(100);
         }
     }
@@ -281,81 +264,24 @@ void main(void) {
     }
     LThreshold = RThreshold = threshold = imageInitThreshold();
     frameBusy = 0;   // 消费开机首帧，让后续帧正常搬运
-#if (ENABLE_SCREEN)
-    ips200_displayimage03x(&mt9v03x_frame[0][0], MT9V03X_W, MT9V03X_H, 0, 0); //上电显示一帧原始画面，确认摄像头正常
-#endif
-#if (VISION_ONLY)
-    { /* ===== 视觉单测：只需主板 + 摄像头 =====
-       * 每帧都跑 loadRoad()；屏幕每 500 ms 才刷一次（刷屏要几十 ms，每帧都刷会把帧率压到 20~30）。
-       * 这样 FPS 显示的是「纯处理帧率」，不受刷屏拖累，可直接判断算法够不够快。
-       * 不调用 motorInit()，所以不启动 5 ms 控制 PIT，也不驱动电机/舵机/编码器。 */
-        uint16 frames = 0, fps = 0, lastFrame = 0, lastSec = 0, lastDraw = 0, drawAcc = 0;
-        pit_ms_init(TIM1_PIT, 1, visionTick); // 1 ms 计时，仅用于统计帧率
-        while (1) {
-            if (!frameBusy) continue;
-            loadRoad();
-            frames++;
-            /* 帧率每秒结算一次，并把刷屏耗时从分母里扣掉，得到「纯处理帧率」。
-             * 实测一次文本刷新要数百毫秒（每个字符都要重设显示窗口），若把刷屏时间算进去，
-             * 读到的数字会远低于真实处理能力（之前总显示 5 就是这么来的）。 */
-            if ((uint16) (visionMs - lastSec) >= 1000) {
-                uint16 elapsed = (uint16) (visionMs - lastSec);
-                if (elapsed > drawAcc)
-                    fps = (uint16) ((uint32) (frames - lastFrame) * 1000 / (elapsed - drawAcc));
-                lastFrame = frames;
-                lastSec = visionMs;
-                drawAcc = 0;
-            }
-            if ((uint16) (visionMs - lastDraw) >= VISION_REFRESH_MS) { // 读数刷新周期
-                uint16 t0 = visionMs;
-                lastDraw = visionMs;
-#if (VISION_PREVIEW)
-                // 刷屏期间 frameBusy 仍为 1，ISR 不会换帧，画面不会撕裂
-                ips200_displayimage03x(&mt9v03x_frame[0][0], MT9V03X_W, MT9V03X_H, 0, 0);
-                // 隔点绘制：点间距约 3 px，隔点仍然连贯，但绘制调用直接减半（draw_point 每次都要重设窗口，很贵）
-                for (i = 0; i < LRoadCount; i += 2) ips200_draw_point(LRoad[i].y, LRoad[i].x, RGB565_BLUE);
-                for (i = 0; i < RRoadCount; i += 2) ips200_draw_point(RRoad[i].y, RRoad[i].x, RGB565_RED);
-                for (i = 0; i < centerLineCount; i += 2) ips200_draw_point(centerLine[i].y, centerLine[i].x, RGB565_GREEN);
-#endif
-                ips200_show_string(0, MT9V03X_H + 6, "L:");
-                ips200_show_int16(16, MT9V03X_H + 6, LRoadCount);
-                ips200_show_string(120, MT9V03X_H + 6, "R:");
-                ips200_show_int16(136, MT9V03X_H + 6, RRoadCount);
-                ips200_show_string(0, MT9V03X_H + 26, "C:");
-                ips200_show_int16(16, MT9V03X_H + 26, centerLineCount);
-                ips200_show_string(120, MT9V03X_H + 26, "THR:");
-                ips200_show_int16(152, MT9V03X_H + 26, threshold);
-                ips200_show_string(0, MT9V03X_H + 46, "LC:");
-                ips200_show_int16(24, MT9V03X_H + 46, LCorner);
-                ips200_show_string(120, MT9V03X_H + 46, "RC:");
-                ips200_show_int16(144, MT9V03X_H + 46, RCorner);
-                ips200_show_string(0, MT9V03X_H + 66, "FPS:");
-                ips200_show_int16(40, MT9V03X_H + 66, (int16) fps);
-                ips200_show_string(96, MT9V03X_H + 66, "FRAME:");
-                ips200_show_int16(160, MT9V03X_H + 66, (int16) frames);
-                drawAcc += (uint16) (visionMs - t0); // 累计本次刷屏耗时，供帧率结算扣除
-            }
-            frameBusy = 0; // 处理完才允许 ISR 搬下一帧
-        }
-    }
-#endif
     /* ===== 上电自动选档：拨码 SW1/SW2 选 4 组，取该组中较保守的一档 =====
      * 按键已简化：B2 发车 / B3 紧急停车 / B4 舵机自检（长按 2 s = 标定一圈），
      * 因此不再需要按键选档，上电即按拨码定档并初始化电机与编码器。 */
     switch2 = gpio_get_level(IO_PB1);
     switch1 = gpio_get_level(IO_PB0);
     applySpeedSet((uint8) (((switch2 ? 2 : 0) + (switch1 ? 1 : 0)) * 2 + 1));
+
+#if (TEST_AUTO_RUN)
+    /* 调试：上电直接进入 RUNNING，开环固定占空比自动前进（不用按 B2）。
+     * 按 B3 仍可立即停车。上车前把 TEST_AUTO_RUN 改回 0 */
+    stop = 0;
+    raceState = RACE_RUNNING;
+#endif
     RUN_MODE = FORWARD;
     stopInit();
-    ips200_clear(RGB565_WHITE);
-    ips200_show_string(0, 140, "TOP   : START");
-    ips200_show_string(0, 160, "BOTTOM: SET LAP");
-    ips200_show_string(0, 180, "IMAGE : STOP");
     frameBusy = 0;   // 丢弃选档期间累积的旧帧，第一拍处理发车后的当前画面
     while (1) {
         static uint16 noFrameTicks = 0;  // 帧看门狗：2 ms 节拍累计，约 1 s 无新帧则安全停车
-        static uint8 lastRaceState = RACE_IDLE; // 用于检测 raceState 变化并刷新屏幕提示（初始 IDLE，保留发车提示）
-        static uint16 lastFault = 0;       // 故障位变化时也刷一次屏（16 位，含 PID 异常位）
         static uint16 elemTicks = 0;       // 元素状态机停留帧数（超时兜底）
         /* 按键与里程判定不依赖相机帧：摄像头停帧时仍能急停 / 收车 */
         btnScan();
@@ -379,25 +305,8 @@ void main(void) {
         /* B4 短按（松开时判定，且本次不是长按）：舵机左右各摆 15° */
         if ((btnReleaseEdge & BTN_B4) && !btnLastWasLong) servoSelfTest();
         raceTask();
-        /* 状态或故障位变化时刷一次屏（只在切换点发生，开销可忽略）；
-         * 之前发车后屏幕仍停在三行静态提示上，容易被误认为停车了 */
-        if (lastRaceState != raceState || lastFault != faultFlags) {
-            lastRaceState = raceState;
-            lastFault = faultFlags;
-            ips200_clear(RGB565_WHITE);
-            if (raceState == RACE_RUNNING)
-                ips200_show_string(0, 130, "RUN");
-            else if (raceState == RACE_BRAKING)
-                ips200_show_string(0, 130, "BRAKE");
-            else if (raceState == RACE_STOPPED)
-                ips200_show_string(0, 130, "STOP");
-            else
-                ips200_show_string(0, 130, "READY");
-            ips200_show_string(0, 160, "ERR:");
-            ips200_show_int16(64, 160, (int16) faultFlags);
-        }
 
-        updateStatusLed(); // 蓝灯：故障 / 不在赛道 / 编码器方向 统一指示
+        updateStatusLed(); // 蓝灯：故障常亮 / 正向快闪 / 反向常亮 / 静止熄灭
 
         if (frameBusy) {
             noFrameTicks = 0;   // 收到完整帧，喂狗

@@ -69,23 +69,8 @@ void faultReset(void);
 #define STATUS_LED_ON       0
 #define STATUS_LED_OFF      1
 
-/* ===== 屏幕开关 =====
- * 本车 IPS200 已损坏：置 0 后所有 ips200_* 调用被替换成空操作，
- * 编译期直接去掉显示代码（不影响控制、不影响任何状态机）。
- * 换回好屏时改 1 即可恢复全部显示。 */
-#define ENABLE_SCREEN      0
-
-#if (!ENABLE_SCREEN)
-/* 展开为空：调用点留下一个空语句 `;`，不产生告警也不产生代码。
- * 注意 ips200_displayimage03x 是库里的宏（展开成 ips200_show_gray_image），
- * 不能在这里重定义，调用点用 #if (ENABLE_SCREEN) 包住。 */
-#define ips200_init()
-#define ips200_clear(c)
-#define ips200_show_string(x, y, s)
-#define ips200_show_int16(x, y, v)
-#define ips200_show_int32(x, y, v, w)
-#define ips200_draw_point(x, y, c)
-#endif
+/* 屏幕（IPS200）已从硬件上移除，工程内不再有任何 ips200_* 调用。
+ * 若以后加回屏幕，直接调用库函数即可（头文件仍在 zf_common_headfile.h 里）。 */
 
 #define FORWARD 114
 #define CROSS 514
@@ -121,7 +106,7 @@ volatile extern int16 setSpeed, handle, encoderL, encoderR;
 /* 开环固定巡航占空比：地面绝对水平、不需要爬坡，直接给一个「刚能稳定转起来」的值。
  * 14%（1400）实测轮子不转，30%（3000）能跑；这里取中间偏下，作为最慢稳定档。
  * 若仍不转 → 2500 / 3000；若嫌快 → 2000。 */
-#define MOTOR_RUN_DUTY         3010   // 30.1%：卡在启动死区边缘
+#define MOTOR_RUN_DUTY         1800   // 18%（按用户指定）
 
 /* ===== 电机方向电平 =====
  * DIR = 该电平时车轮向前（与编码器计数为正的方向一致）。
