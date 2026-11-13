@@ -121,19 +121,19 @@ volatile extern int16 setSpeed, handle, encoderL, encoderR;
 /* 开环固定巡航占空比：地面绝对水平、不需要爬坡，直接给一个「刚能稳定转起来」的值。
  * 14%（1400）实测轮子不转，30%（3000）能跑；这里取中间偏下，作为最慢稳定档。
  * 若仍不转 → 2500 / 3000；若嫌快 → 2000。 */
-#define MOTOR_RUN_DUTY         2200
+#define MOTOR_RUN_DUTY         3000   // 22% 起不来，回到已确认能跑的 30%
 
 /* ===== 电机方向电平 =====
  * DIR = 该电平时车轮向前（与编码器计数为正的方向一致）。
- * 实测：DIR=1 时两轮逆时针（车后退），所以前进电平改成 0。
- * 若换线后方向又反了，把这里改回 1。 */
-#define MOTOR_DIR_FORWARD      0
+ * 实测：DIR=0 时推车向前、电机反而往后退 → 说明 DIR=1 才是前进。
+ * （之前看到的"逆时针"是站在车左侧看左轮，前进本来就是逆时针。） */
+#define MOTOR_DIR_FORWARD      1
 
 /* ===== 起跑助推 =====
  * 发车后先用固定占空比推一段时间，破开静摩擦再交给 PID。
  * 目的：避免"车起不来 → PID 积分打满 → 一推就全速冲出去"。 */
-#define MOTOR_KICK_TICKS   0       // 爬坡诊断期间不需要助推（0 = 关闭）
-#define MOTOR_KICK_DUTY    2500    // 25%：仅起步 300 ms，用来破静摩擦（巡航仍是 ≤16%）
+#define MOTOR_KICK_TICKS   60      // 60 × 5 ms = 300 ms 起跑助推
+#define MOTOR_KICK_DUTY    4500    // 45%：仅起步 300 ms，用来破静摩擦
 
 void motorKickStart(void);  // 由 raceStart() 调用
 void servoSelfTest(void);   // 上电舵机自检：左右各摆 SERVO_TEST_SWING（≈15°）
