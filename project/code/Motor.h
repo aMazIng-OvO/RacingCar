@@ -63,8 +63,11 @@ void faultReset(void);
  * 编码器反馈异常 / PID 异常时点亮，正常熄灭。
  * 引脚按实际接线改；若亮灭相反，把 ON / OFF 两个值对调。 */
 #define STATUS_LED_PIN      IO_P52
-#define STATUS_LED_ON       1
-#define STATUS_LED_OFF      0
+/* 该核心板的蓝灯是「阴极接引脚、阳极经电阻接 3.3V」，即 **低电平点亮**：
+ * 上电后代码一直写 OFF(0)，灯却常亮，说明 0 才是亮。
+ * 若换板后灯变成常灭，把这两个值对调回 1 / 0。 */
+#define STATUS_LED_ON       0
+#define STATUS_LED_OFF      1
 
 /* ===== 屏幕开关 =====
  * 本车 IPS200 已损坏：置 0 后所有 ips200_* 调用被替换成空操作，
