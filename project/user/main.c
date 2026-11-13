@@ -304,7 +304,6 @@ void main(void) {
         static uint16 noFrameTicks = 0;  // 帧看门狗：2 ms 节拍累计，约 1 s 无新帧则安全停车
         static uint8 lastRaceState = RACE_IDLE; // 用于检测 raceState 变化并刷新屏幕提示（初始 IDLE，保留发车提示）
         static uint16 lastFault = 0;       // 故障位变化时也刷一次屏（16 位，含 PID 异常位）
-        static uint8 borderLost = 0;       // 连续看不到边界的帧数
         static uint16 elemTicks = 0;       // 元素状态机停留帧数（超时兜底）
         /* 按键与里程判定不依赖相机帧：摄像头停帧时仍能急停 / 收车 */
         uint8 tBtn = gpio_get_level(IO_PB2), bBtn = gpio_get_level(IO_PB3), sBtn = gpio_get_level(IO_PB4);
@@ -346,19 +345,6 @@ void main(void) {
             noFrameTicks = 0;   // 收到完整帧，喂狗
             loadRoad();
             if (raceState == RACE_RUNNING || raceState == RACE_BRAKING) {
-                /* 图像类异常检测（每帧一次，只读） */
-                if (threshold == 128)
-                    faultFlags |= FAULT_IMAGE_DARK; // 采样区几乎没有明暗差
-                else
-                    faultFlags &= (uint16) (~FAULT_IMAGE_DARK);
-                if (!LRoadCount && !RRoadCount) {
-                    if (borderLost < 250) borderLost++;
-                    if (borderLost >= 200) faultFlags |= FAULT_NO_BORDER; // 约 2 s 看不到赛道
-                } else {
-                    borderLost = 0;
-                    faultFlags &= (uint16) (~FAULT_NO_BORDER);
-                }
-
                 if (ENABLE_CROSS && (RUN_MODE == CROSS ||
                                      (RUN_MODE == FORWARD && ((RCorner && RRoadCount > 2) || (LCorner && LRoadCount > 2)) &&
                                       LRoadCount < CROSS_MAX && RRoadCount < CROSS_MAX))) {
@@ -394,7 +380,7 @@ void main(void) {
         } else if (++noFrameTicks > 1000) {
             /* 稳定优先：摄像头掉帧 / DMA 异常时，不允许保持上一拍打角继续全速跑 */
             noFrameTicks = 0;
-            faultFlags |= FAULT_NO_FRAME | FAULT_STOPPED; // 约 1 s 无新帧
+            // 约 1 s 无新帧：紧急停车（不置故障位，避免与 PID 异常混淆）
             if (raceState == RACE_RUNNING || raceState == RACE_BRAKING) raceStopNow();
         }
         system_delay_ms(1);   // 主循环 1 ms 节拍：按键去抖 + 帧看门狗计时基准（越小越不压帧延迟）

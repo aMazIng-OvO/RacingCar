@@ -23,64 +23,33 @@ int16 currentDuty;
 extern volatile int32 odometer;
 extern volatile int16 LRoadCount, RRoadCount;
 
-/* ===== 异常状态检测 ===== */
+/* ===== 异常状态检测（仅 PID 异常 + 紧急停车） ===== */
 volatile uint16 faultFlags = 0;
-static uint8 encLostL = 0, encLostR = 0, stallCnt = 0, graceCnt = 0;
+static uint8 graceCnt = 0;
 static uint8 satCnt = 0, revCntL = 0, revCntR = 0; //PID 饱和 / 正反馈计时
 static uint8 outCnt = 0;                           //出界判定消抖计数
 static int16 pidOutL = 0, pidOutR = 0;             //PID 实际输出，供异常检测读取
 
 void faultReset(void) {
     faultFlags = 0;
-    encLostL = encLostR = stallCnt = graceCnt = 0;
+    graceCnt = 0;
     satCnt = revCntL = revCntR = 0;
+    outCnt = 0;
 }
 
 /* 在 5 ms 控制中断里调用：只读编码器与 setSpeed，不改变任何控制量，
  * 唯一的动作是判定为致命故障时置 stop、切到 RACE_STOPPED。 */
 static void faultScan(void) {
-    int16 aL, aR, dif, sum, baseL, baseR;
+    int16 baseL, baseR;
     if (raceState != RACE_RUNNING && raceState != RACE_BRAKING) {
-        encLostL = encLostR = stallCnt = graceCnt = 0;
+        graceCnt = 0;
+        satCnt = revCntL = revCntR = 0;
         return;
     }
     if (graceCnt < 200) { // 发车后约 1 s 内不判：PID 起转、齿轮间隙都需要时间
         graceCnt++;
         return;
     }
-
-    aL = func_abs(encoderL);
-    aR = func_abs(encoderR);
-
-    if (setSpeed > 60) { // 有明确速度指令才判编码器
-        if (aL < 3) {
-            if (encLostL < 250) encLostL++;
-        } else
-            encLostL = 0;
-        if (aR < 3) {
-            if (encLostR < 250) encLostR++;
-        } else
-            encLostR = 0;
-        if (encLostL >= 60) faultFlags |= FAULT_ENC_L_DOWN; // 300 ms 无反馈
-        if (encLostR >= 60) faultFlags |= FAULT_ENC_R_DOWN;
-    } else {
-        encLostL = encLostR = 0;
-    }
-
-    if (aL > 30 && aR > 30) { // 两轮都转起来后比较速差
-        dif = (aL > aR) ? (int16) (aL - aR) : (int16) (aR - aL);
-        sum = (int16) (aL + aR);
-        if ((int16) (dif * 2) > sum)
-            faultFlags |= FAULT_ENC_SKEW; // 差 > 50%
-        else
-            faultFlags &= (uint16) (~FAULT_ENC_SKEW);
-    }
-
-    if (setSpeed > 150 && aL < 8 && aR < 8) { // 有指令但两轮几乎不转
-        if (stallCnt < 250) stallCnt++;
-        if (stallCnt >= 100) faultFlags |= FAULT_STALL; // 500 ms
-    } else
-        stallCnt = 0;
 
     /* ---- PID 异常 ---- */
     baseL = pidOutL; // 增量式 PID 的实际输出（-10000~+10000）
@@ -98,19 +67,21 @@ static void faultScan(void) {
 
     /* 正反馈：有明显输出，编码器却往反方向计数。
      * 这是速度环最危险的一种故障（接反 / 编码器 A/B 反），不停车会一路加速。 */
-    if (setSpeed > 60 && func_abs(baseL) > 1500 && aL > 5 && ((int32) baseL * (int32) encoderL) < 0) {
+    if (setSpeed > 60 && func_abs(baseL) > 1500 && func_abs(encoderL) > 5 &&
+        ((int32) baseL * (int32) encoderL) < 0) {
         if (revCntL < 250) revCntL++;
         if (revCntL >= 50) faultFlags |= FAULT_PID_REV; // 250 ms
     } else
         revCntL = 0;
-    if (setSpeed > 60 && func_abs(baseR) > 1500 && aR > 5 && ((int32) baseR * (int32) encoderR) < 0) {
+    if (setSpeed > 60 && func_abs(baseR) > 1500 && func_abs(encoderR) > 5 &&
+        ((int32) baseR * (int32) encoderR) < 0) {
         if (revCntR < 250) revCntR++;
         if (revCntR >= 50) faultFlags |= FAULT_PID_REV;
     } else
         revCntR = 0;
 
-    /* 致命故障：编码器掉线 / 堵转 / PID 饱和 / 正反馈，都必须立即停车 */
-    if (faultFlags & (FAULT_ENC_L_DOWN | FAULT_ENC_R_DOWN | FAULT_STALL | FAULT_PID_SAT | FAULT_PID_REV)) {
+    /* 任一项异常都是致命故障：立即紧急停车 */
+    if (faultFlags & (FAULT_PID_SAT | FAULT_PID_REV)) {
         faultFlags |= FAULT_STOPPED;
         stop = 1;
         if (raceState == RACE_RUNNING || raceState == RACE_BRAKING) raceState = RACE_STOPPED;
@@ -202,7 +173,6 @@ static void pitHandler() {
     if (stop
 #if (!LOW_SPEED_TEST)
         || (outCnt >= 3)                  // 出界消抖：连续 15 ms 成立
-        || (faultFlags & FAULT_NO_BORDER) // 连续约 2 s 看不到边界也停车
 #endif
        ) {
         // 出界保护必须与比赛状态同步，否则 raceTask 永远等不到里程且 TOP 键无法恢复
