@@ -102,7 +102,9 @@ static void trackNormalLed(void) {
 void trackMonitor(void) {
     uint8 raw;
 
-    raw = (uint8) ((LRoadCount > TRACK_ON_POINTS) || (RRoadCount > TRACK_ON_POINTS));
+    /* threshold == 128 是"画面没有明暗差"的兜底值，此时即使有点数也不可信 */
+    raw = (uint8) ((threshold != 128) &&
+                   ((LRoadCount > TRACK_ON_POINTS) || (RRoadCount > TRACK_ON_POINTS)));
 
     if (raw == onTrack) {
         confirmCnt = 0;

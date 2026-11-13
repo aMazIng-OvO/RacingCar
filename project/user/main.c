@@ -330,6 +330,10 @@ void loadRoad() {
     LRoadCount = expRoadCount, RRoadCount = expRoadCount;
     getLBorder(LRoad, LStart, &LRoadCount);
     getRBorder(RRoad, RStart, &RRoadCount);
+    /* 起点没找到（getLStart/getRStart 返回 0,0）时把计数清 0。
+     * 否则计数会停在 expRoadCount(100)，赛道识别会误判成"一直在赛道上"。 */
+    if (!LStart.x && !LStart.y) LRoadCount = 0;
+    if (!RStart.x && !RStart.y) RRoadCount = 0;
     LBorderCount = func_limit_ab(LRoadCount, 0, expRoadCount);
     memcpy(LBorder, LRoad, LBorderCount * sizeof(Point));
     RBorderCount = func_limit_ab(RRoadCount, 0, expRoadCount);
