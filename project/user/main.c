@@ -253,11 +253,16 @@ void main(void) {
         static uint16 elemTicks = 0;       // 元素状态机停留帧数（超时兜底）
         /* 按键与里程判定不依赖相机帧：摄像头停帧时仍能急停 / 收车 */
         btnScan();
-        /* B2：发车（完赛或急停后也可重新发车） */
+        /* B2：先做赛道检测，在赛道上才发车；不在赛道则蓝灯慢闪提示 */
         if (btnPressEdge & BTN_B2) {
             if (raceState == RACE_IDLE || raceState == RACE_STOPPED) {
-                faultReset(); // 每次发车清空上一轮故障位（停车时保留，便于赛后查看原因）
-                raceStart();
+                if (trackIsOn()) {
+                    trackSetNoTrackAlarm(0);
+                    faultReset(); // 每次发车清空上一轮故障位（停车时保留，便于赛后查看原因）
+                    raceStart();
+                } else {
+                    trackSetNoTrackAlarm(1); // 不在赛道：慢闪，不发车
+                }
             }
         }
         /* B3：紧急停车（不再限状态，任何时刻按下都停，避免"跑了停不下来"） */

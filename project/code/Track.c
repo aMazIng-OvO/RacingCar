@@ -10,19 +10,15 @@ extern volatile int16 LRoadCount, RRoadCount;
 #define TRACK_ON_POINTS    10     // 任一侧边界点数超过该值即视为"在赛道上"
 #define TRACK_CONFIRM_MS   50     // 判据消抖：连续 50 ms 一致才切换状态
 
-#define BLINK_ON_MS        80     // 报警快闪：亮 80 ms
-#define BLINK_OFF_MS       80     //           灭 80 ms
-#define BLINK_TIMES        3      // 一组闪 3 下
-#define ALARM_PAUSE_MS     1000   // 一组闪完停 1 秒
-
+#define SLOW_BLINK_MS      500    // 慢闪半周期：亮 500 ms / 灭 500 ms（1 Hz）
 #define LED_FAST_MS        100    // 常规指示：正向快闪的翻转周期
 
 static uint8 onTrack;        // 0 = 不在赛道，1 = 在赛道
 static uint8 confirmCnt;     // 判据消抖计数
 
-static uint16 alarmTimer;    // 报警状态机的剩余毫秒
-static uint8 alarmPhase;     // 0=亮 1=灭 2=判断是否继续 3=长停
-static uint8 blinkCnt;       // 本组已闪次数
+static uint8 alarmOn;        // 1 = 正在做"不在赛道"慢闪
+static uint16 slowMs;        // 慢闪计时
+static uint8 slowPhase;      // 慢闪相位
 
 static uint16 ledTimer;      // 常规指示的翻转计时
 static uint8 ledPhase;       // 常规指示的亮灭相位
@@ -30,9 +26,9 @@ static uint8 ledPhase;       // 常规指示的亮灭相位
 void trackInit(void) {
     onTrack = 0;
     confirmCnt = 0;
-    alarmTimer = 0;
-    alarmPhase = 0;
-    blinkCnt = 0;
+    alarmOn = 0;
+    slowMs = 0;
+    slowPhase = 1;
     ledTimer = 0;
     ledPhase = 0;
 }
@@ -41,38 +37,11 @@ uint8 trackIsOn(void) {
     return onTrack;
 }
 
-/* 报警：快闪 3 下 → 停 1 秒 → 循环 */
-static void trackAlarm(void) {
-    if (alarmTimer > 0) {
-        alarmTimer--;
-        return;
-    }
-    switch (alarmPhase) {
-        case 0: // 亮
-            gpio_set_level(STATUS_LED_PIN, STATUS_LED_ON);
-            alarmTimer = BLINK_ON_MS;
-            alarmPhase = 1;
-            break;
-        case 1: // 灭
-            gpio_set_level(STATUS_LED_PIN, STATUS_LED_OFF);
-            alarmTimer = BLINK_OFF_MS;
-            alarmPhase = 2;
-            break;
-        case 2: // 本次闪完，判断一组是否结束
-            if (++blinkCnt >= BLINK_TIMES) {
-                alarmPhase = 3;
-                alarmTimer = ALARM_PAUSE_MS;
-            } else {
-                alarmPhase = 0;
-                alarmTimer = 0;
-            }
-            break;
-        default: // 长停结束，开始下一组
-            blinkCnt = 0;
-            alarmPhase = 0;
-            alarmTimer = 0;
-            break;
-    }
+void trackSetNoTrackAlarm(uint8 on) {
+    alarmOn = on;
+    slowMs = 0;
+    slowPhase = 1; // 从头开始：先亮
+    if (on) gpio_set_level(STATUS_LED_PIN, STATUS_LED_ON);
 }
 
 /* 常规指示：故障常亮 / 编码器正向快闪 / 反向常亮 / 静止熄灭 */
@@ -111,21 +80,22 @@ void trackMonitor(void) {
     } else if (++confirmCnt >= TRACK_CONFIRM_MS) {
         confirmCnt = 0;
         onTrack = raw;
-        if (!onTrack) { // 刚离开赛道：报警从头开始
-            alarmTimer = 0;
-            alarmPhase = 0;
-            blinkCnt = 0;
-        }
+        if (onTrack) alarmOn = 0; // 回到赛道：自动停掉慢闪
     }
 
-    if (!onTrack) {
-        trackAlarm();
+    if (alarmOn) { // 发车被拒（不在赛道）：慢闪 1 Hz
+        if (++slowMs >= SLOW_BLINK_MS) {
+            slowMs = 0;
+            slowPhase = (uint8) (!slowPhase);
+        }
+        gpio_set_level(STATUS_LED_PIN, slowPhase ? STATUS_LED_ON : STATUS_LED_OFF);
         return;
     }
 
-    /* 回到赛道：清掉报警状态，恢复正常指示 */
-    alarmTimer = 0;
-    alarmPhase = 0;
-    blinkCnt = 0;
+    if (!onTrack) { // 不在赛道但没在报警：保持熄灭
+        gpio_set_level(STATUS_LED_PIN, STATUS_LED_OFF);
+        return;
+    }
+
     trackNormalLed();
 }
