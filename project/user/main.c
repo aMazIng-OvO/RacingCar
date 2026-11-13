@@ -251,6 +251,13 @@ void main(void) {
         static uint16 elemTicks = 0;       // 元素状态机停留帧数（超时兜底）
         /* 按键与里程判定不依赖相机帧：摄像头停帧时仍能急停 / 收车 */
         btnScan();
+        /* 按键确认反馈：任意一个键按下（边沿）→ 蓝灯亮 60 ms。
+         * 用于在没有屏幕的情况下确认"按键到底有没有被读到" */
+        if (btnPressEdge) {
+            gpio_set_level(STATUS_LED_PIN, STATUS_LED_ON);
+            system_delay_ms(60);
+            gpio_set_level(STATUS_LED_PIN, STATUS_LED_OFF);
+        }
         /* B2：先做赛道检测，在赛道上才发车；不在赛道则蓝灯慢闪提示 */
         if (btnPressEdge & BTN_B2) {
             if (raceState == RACE_IDLE || raceState == RACE_STOPPED) {
