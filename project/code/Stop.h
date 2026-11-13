@@ -11,6 +11,11 @@
 
 #include "zf_common_headfile.h"
 
+/* 是否要求「先标定一圈」才允许发车：
+ *   0 = 调试放行：不标定也能发车，且不会自动刹停（靠 B3 手动停车）
+ *   1 = 正式比赛：未标定按 B2 拒绝发车（蓝灯闪 3 下） */
+#define CALIB_REQUIRED  0
+
 /* ---------------- 里程参数：上车后必须实测标定 ---------------- */
 #define PULSE_PER_METER     1000    // 每米脉冲数（推车走 1 米读取 odometer）
 #define LAP_DISTANCE_CM     1200    // 赛道一圈的长度 cm

@@ -366,10 +366,8 @@ void main(void) {
                 raceStart();
             }
         }
-        /* B3：紧急停车 */
-        if (btnPressEdge & BTN_B3) {
-            if (raceState == RACE_RUNNING || raceState == RACE_BRAKING) raceStopNow();
-        }
+        /* B3：紧急停车（不再限状态，任何时刻按下都停，避免"跑了停不下来"） */
+        if (btnPressEdge & BTN_B3) raceStopNow();
         /* B4 长按 ≥2 s：标定一圈（按住到阈值时触发一次） */
         if (btnLongEvent) {
             btnLongEvent = 0;

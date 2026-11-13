@@ -22,9 +22,12 @@ void stopInit(void) {
 }
 
 void raceStart(void) {
-    uint8 i; // 屏幕不可用时的蜂鸣提示循环
+#if (CALIB_REQUIRED)
+    uint8 i; // 未标定提示的闪烁循环
+#endif
     /* A1：未标定一圈就发车，里程会在几百毫秒内越过 lapPulse-brakePulse，
      * 表现为"起步跑一下就自己停"，而屏幕上看不出任何原因。这里直接拒绝发车。 */
+#if (CALIB_REQUIRED)
     if (!lapCalibrated) {
 #if (ENABLE_SCREEN)
         ips200_clear(RGB565_WHITE);
@@ -32,7 +35,7 @@ void raceStart(void) {
         ips200_show_string(0, 160, "push 1 lap, press B3");
         ips200_show_string(0, 190, "then B2 to start");
 #else
-        /* 屏幕与蜂鸣器都不可用：用蓝灯闪 3 下表示「未标定一圈，拒绝发车」 */
+        /* 屏幕不可用：蓝灯闪 3 下表示「未标定一圈，拒绝发车」 */
         for (i = 0; i < 3; i++) {
             gpio_set_level(STATUS_LED_PIN, STATUS_LED_ON);
             system_delay_ms(80);
@@ -42,6 +45,13 @@ void raceStart(void) {
 #endif
         return;
     }
+#else
+    /* 调试放行：不要求先标定，圈长设成极大值 → 不会自动刹停，靠 B3 手动停 */
+    if (!lapCalibrated) {
+        lapPulse = 0x7FFFFFFF;
+        brakePulse = 0;
+    }
+#endif
     // 先复位全部元素/控制状态，最后才解除 stop，
     // 避免 PIT 在 stop=0 与 raceState=RUNNING 之间的窗口用旧目标驱动
     elementReset();
