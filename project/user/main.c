@@ -145,6 +145,10 @@ void main(void) {
     gpio_init(IO_PB4, GPI, 0, GPI_PULL_UP);  // IMAGE
     gpio_init(IO_P90, GPO, 0, GPO_PUSH_PULL); //蜂鸣器（本车未装，保留不影响）
     gpio_init(STATUS_LED_PIN, GPO, STATUS_LED_OFF, GPO_PUSH_PULL); //蓝色状态灯
+    /* 上电自检：蓝灯亮 200ms 再灭。灯不亮或常亮不灭，说明极性与 STATUS_LED_ON/OFF 相反 */
+    gpio_set_level(STATUS_LED_PIN, STATUS_LED_ON);
+    system_delay_ms(200);
+    gpio_set_level(STATUS_LED_PIN, STATUS_LED_OFF);
     //gpio_init(IO_P04, GPO, 0, GPO_PUSH_PULL); //示波器
     { //等 DMA 中断搬入第一帧完整快照再估阈值（带超时，防止摄像头异常时死等）
         uint16 wait = 0;
