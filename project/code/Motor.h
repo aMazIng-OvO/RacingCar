@@ -20,7 +20,7 @@
  * ⚠ PULSE_PER_METER 目前仍是占位值 1000（未实测），直接套公式只有 10，车会完全不动，
  *   所以这里先给实测前的保守值；推车 1 m 标定完 PULSE_PER_METER 后请按公式重算。 */
 #define MAX_SPEED_MPS      2
-#define MAX_SET_SPEED      300
+#define MAX_SET_SPEED      180   // 调试期先压到很低，确认能稳住再往上提（300 ≈ 原先的最低档满速）
 
 /* 实际生效的速度上限：目标速度与左右轮目标都按它限幅（稳定后可整体提高） */
 #if (MAX_SET_SPEED < SAFE_SPEED_CEILING)

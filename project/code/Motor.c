@@ -25,7 +25,7 @@ extern volatile int16 LRoadCount, RRoadCount;
 
 /* ===== 异常状态检测（编码器掉线 + PID 异常 + 紧急停车） ===== */
 volatile uint16 faultFlags = 0;
-static uint8 graceCnt = 0;
+static uint16 graceCnt = 0; // 16 位：宽限期按 5 ms 计，需要超过 255
 static uint8 encLostL = 0, encLostR = 0; //编码器无反馈计时
 static uint8 satCnt = 0, revCntL = 0, revCntR = 0; //PID 饱和 / 正反馈计时
 static uint8 outCnt = 0;                           //出界判定消抖计数
@@ -49,7 +49,7 @@ static void faultScan(void) {
         satCnt = revCntL = revCntR = 0;
         return;
     }
-    if (graceCnt < 200) { // 发车后约 1 s 内不判：PID 起转、齿轮间隙都需要时间
+    if (graceCnt < 400) { // 发车后约 2 s 内不判：PID 起转、齿轮间隙、静摩擦都需要时间
         graceCnt++;
         return;
     }
@@ -59,7 +59,9 @@ static void faultScan(void) {
 
     /* ---- 编码器掉线：有速度指令，但该轮 300 ms 内一个计数都没有。
      * 断线时 PID 会一路加满而速度恒为 0，必须在它冲起来之前停掉。 ---- */
-    if (setSpeed > 60) {
+    /* 只有「确实已经给出较大占空比」才判编码器掉线：
+     * 起步爬坡阶段输出还没起来、车本来就没动，那不是编码器故障。 */
+    if (setSpeed > 60 && (func_abs(pidOutL) > 2000 || func_abs(pidOutR) > 2000)) {
         if (aL < 3) {
             if (encLostL < 250) encLostL++;
         } else
@@ -93,13 +95,13 @@ static void faultScan(void) {
     if (setSpeed > 60 && func_abs(baseL) > 1500 && aL > 5 &&
         ((int32) baseL * (int32) encoderL) < 0) {
         if (revCntL < 250) revCntL++;
-        if (revCntL >= 50) faultFlags |= FAULT_PID_REV; // 250 ms
+        if (revCntL >= 100) faultFlags |= FAULT_PID_REV; // 500 ms（起步时轻微后溜不算）
     } else
         revCntL = 0;
     if (setSpeed > 60 && func_abs(baseR) > 1500 && aR > 5 &&
         ((int32) baseR * (int32) encoderR) < 0) {
         if (revCntR < 250) revCntR++;
-        if (revCntR >= 50) faultFlags |= FAULT_PID_REV;
+        if (revCntR >= 100) faultFlags |= FAULT_PID_REV;
     } else
         revCntR = 0;
 
