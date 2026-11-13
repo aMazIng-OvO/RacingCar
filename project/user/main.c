@@ -341,12 +341,37 @@ void main(void) {
                 ips200_show_string(0, 130, "READY");
             ips200_show_string(0, 160, "ERR:");
             ips200_show_int16(64, 160, (int16) faultFlags);
-            /* 编码器反馈异常 / PID 异常 → 蓝灯常亮；正常熄灭。
-             * 本车没有蜂鸣器，这盏灯就是唯一的故障指示。 */
-            if (faultFlags & (FAULT_ENC_L_DOWN | FAULT_ENC_R_DOWN | FAULT_PID_REV | FAULT_PID_SAT))
-                gpio_set_level(STATUS_LED_PIN, STATUS_LED_ON);
-            else
-                gpio_set_level(STATUS_LED_PIN, STATUS_LED_OFF);
+        }
+
+        /* ===== 蓝灯：编码器状态指示（本车唯一的可视化反馈） =====
+         *   计数递增（向前） → 闪烁 5 Hz
+         *   计数倒扣（反向） → 常亮
+         *   没有数值变化     → 熄灭
+         *   编码器/PID 故障  → 常亮（与反向同色，都是"有问题"） */
+        {
+            static uint16 ledMs = 0;
+            static uint8 ledPhase = 0;
+            uint8 ledWant;
+            if (faultFlags & (FAULT_ENC_L_DOWN | FAULT_ENC_R_DOWN | FAULT_PID_SAT | FAULT_PID_REV)) {
+                ledWant = STATUS_LED_ON; // 故障：常亮
+                ledPhase = 1;
+                ledMs = 0;
+            } else if (currentSpeed >= 3) { // 递增：闪烁
+                if (++ledMs >= 100) {
+                    ledMs = 0;
+                    ledPhase = (uint8) (!ledPhase);
+                }
+                ledWant = ledPhase ? STATUS_LED_ON : STATUS_LED_OFF;
+            } else if (currentSpeed <= -3) { // 倒扣：常亮
+                ledWant = STATUS_LED_ON;
+                ledPhase = 1;
+                ledMs = 0;
+            } else { // 无变化：熄灭
+                ledWant = STATUS_LED_OFF;
+                ledPhase = 0;
+                ledMs = 0;
+            }
+            gpio_set_level(STATUS_LED_PIN, ledWant);
         }
 
         if (frameBusy) {

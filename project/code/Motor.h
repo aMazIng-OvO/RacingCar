@@ -22,6 +22,13 @@
 #define MAX_SPEED_MPS      2
 #define MAX_SET_SPEED      300
 
+/* 实际生效的速度上限：目标速度与左右轮目标都按它限幅（稳定后可整体提高） */
+#if (MAX_SET_SPEED < SAFE_SPEED_CEILING)
+#define SPEED_LIMIT        MAX_SET_SPEED
+#else
+#define SPEED_LIMIT        SAFE_SPEED_CEILING
+#endif
+
 /* 上电舵机自检摆幅：左右各 15°。
  * 200 Hz 下 1 duty = 0.5 µs；常见舵机 0.5 ms ≈ 60°，故 15° ≈ 250 duty。 */
 #define SERVO_TEST_SWING   250

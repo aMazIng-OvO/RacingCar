@@ -214,6 +214,9 @@ static void pitHandler() {
 #endif
         RSetSpeed = setSpeed + (!R || !enableDifSpeed ? 0 : setSpeed * 8 / R);
         LSetSpeed = setSpeed - (!R || !enableDifSpeed ? 0 : setSpeed * 8 / R);
+        /* 差速后的单轮目标同样限幅，保证「绝对不超过 SPEED_LIMIT」 */
+        RSetSpeed = (int16) func_limit_ab((int32) RSetSpeed, 0, SPEED_LIMIT);
+        LSetSpeed = (int16) func_limit_ab((int32) LSetSpeed, 0, SPEED_LIMIT);
         pwm_set_duty(motorPwmR, motorPIDCalculate(&motorRPID, RSetSpeed, encoderR));
         pwm_set_duty(motorPwmL, motorPIDCalculate(&motorLPID, LSetSpeed, encoderL));
     }
@@ -260,8 +263,7 @@ void setServoDuty(int8 d) {
 #if (LOW_SPEED_TEST)
         setSpeed = (int16) func_limit_ab((int32) target, 0, LOW_SPEED_TEST_CAP);
 #else
-        setSpeed = (int16) func_limit_ab((int32) target, 0,
-                                         (MAX_SET_SPEED < SAFE_SPEED_CEILING) ? MAX_SET_SPEED : SAFE_SPEED_CEILING);
+        setSpeed = (int16) func_limit_ab((int32) target, 0, SPEED_LIMIT);
 #endif
     }
     R = d < 0 ? -r : r;
