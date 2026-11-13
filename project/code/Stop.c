@@ -21,13 +21,24 @@ void stopInit(void) {
 }
 
 void raceStart(void) {
+    uint8 i; // 屏幕不可用时的蜂鸣提示循环
     /* A1：未标定一圈就发车，里程会在几百毫秒内越过 lapPulse-brakePulse，
      * 表现为"起步跑一下就自己停"，而屏幕上看不出任何原因。这里直接拒绝发车。 */
     if (!lapCalibrated) {
+#if (ENABLE_SCREEN)
         ips200_clear(RGB565_WHITE);
         ips200_show_string(0, 130, "CALIB LAP FIRST");
         ips200_show_string(0, 160, "push 1 lap, press B3");
         ips200_show_string(0, 190, "then B2 to start");
+#else
+        /* 屏幕已损坏：用「三短鸣」代替提示，表示未标定一圈、拒绝发车 */
+        for (i = 0; i < 3; i++) {
+            gpio_set_level(IO_P90, BEEP_ON_LEVEL);
+            system_delay_ms(80);
+            gpio_set_level(IO_P90, BEEP_OFF_LEVEL);
+            system_delay_ms(120);
+        }
+#endif
         return;
     }
     // 先复位全部元素/控制状态，最后才解除 stop，

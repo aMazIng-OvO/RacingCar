@@ -39,6 +39,24 @@ void faultReset(void);
 #define BEEP_ON_LEVEL      1
 #define BEEP_OFF_LEVEL     0
 
+/* ===== 屏幕开关 =====
+ * 本车 IPS200 已损坏：置 0 后所有 ips200_* 调用被替换成空操作，
+ * 编译期直接去掉显示代码（不影响控制、不影响任何状态机）。
+ * 换回好屏时改 1 即可恢复全部显示。 */
+#define ENABLE_SCREEN      0
+
+#if (!ENABLE_SCREEN)
+/* 展开为空：调用点留下一个空语句 `;`，不产生告警也不产生代码。
+ * 注意 ips200_displayimage03x 是库里的宏（展开成 ips200_show_gray_image），
+ * 不能在这里重定义，调用点用 #if (ENABLE_SCREEN) 包住。 */
+#define ips200_init()
+#define ips200_clear(c)
+#define ips200_show_string(x, y, s)
+#define ips200_show_int16(x, y, v)
+#define ips200_show_int32(x, y, v, w)
+#define ips200_draw_point(x, y, c)
+#endif
+
 #define FORWARD 114
 #define CROSS 514
 #define R_ROUND 1919

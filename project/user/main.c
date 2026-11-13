@@ -151,7 +151,9 @@ void main(void) {
     }
     LThreshold = RThreshold = threshold = imageInitThreshold();
     frameBusy = 0;   // 消费开机首帧，让后续帧正常搬运
+#if (ENABLE_SCREEN)
     ips200_displayimage03x(&mt9v03x_frame[0][0], MT9V03X_W, MT9V03X_H, 0, 0); //上电显示一帧原始画面，确认摄像头正常
+#endif
 #if (VISION_ONLY)
     { /* ===== 视觉单测：只需主板 + 摄像头 =====
        * 每帧都跑 loadRoad()；屏幕每 500 ms 才刷一次（刷屏要几十 ms，每帧都刷会把帧率压到 20~30）。
