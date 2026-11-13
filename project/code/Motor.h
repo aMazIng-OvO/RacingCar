@@ -108,10 +108,20 @@ volatile extern int16 setSpeed, handle, encoderL, encoderR;
 #define MOTOR_OPEN_LOOP        1
 #define MOTOR_DUTY_PER_UNIT    8    // 每 1 单位 setSpeed 对应的占空比（180 × 8 = 1440，低于 16% 上限）
 
+/* ===== 占空比爬坡诊断（临时） =====
+ * 设 1 时：发车后占空比从 MOTOR_RAMP_START 开始，每 5 ms 加 MOTOR_RAMP_STEP，
+ * 一直加到 MOTOR_RAMP_MAX 为止。用来找"刚好能让轮子转起来"的临界占空比：
+ *   从按 B2 到轮子开始转，约经过 t 秒 → 临界值 ≈ 10% + 20% × t
+ * 找到之后把本宏改回 0，并用 MOTOR_RUN_DUTY 固定在该值上。 */
+#define MOTOR_DUTY_RAMP        1
+#define MOTOR_RAMP_START       1000   // 10%
+#define MOTOR_RAMP_MAX         6000   // 60%（够高，保证一定能转）
+#define MOTOR_RAMP_STEP        10     // 每 5 ms +0.1%  → 约 20%/秒
+
 /* ===== 起跑助推 =====
  * 发车后先用固定占空比推一段时间，破开静摩擦再交给 PID。
  * 目的：避免"车起不来 → PID 积分打满 → 一推就全速冲出去"。 */
-#define MOTOR_KICK_TICKS   60      // 60 × 5 ms = 300 ms
+#define MOTOR_KICK_TICKS   0       // 爬坡诊断期间不需要助推（0 = 关闭）
 #define MOTOR_KICK_DUTY    2500    // 25%：仅起步 300 ms，用来破静摩擦（巡航仍是 ≤16%）
 
 void motorKickStart(void);  // 由 raceStart() 调用

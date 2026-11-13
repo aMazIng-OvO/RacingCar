@@ -30,6 +30,7 @@ static uint8 encLostL = 0, encLostR = 0; //编码器无反馈计时
 static uint8 satCnt = 0, revCntL = 0, revCntR = 0; //PID 饱和 / 正反馈计时
 static uint8 outCnt = 0;                           //出界判定消抖计数
 static uint16 kickCnt = 0;                         //起跑助推剩余节拍
+static uint16 rampDuty = MOTOR_RAMP_START;         //占空比爬坡当前值（诊断用）
 static int16 pidOutL = 0, pidOutR = 0;             //PID 实际输出，供异常检测读取
 
 void faultReset(void) {
@@ -230,12 +231,18 @@ static void pitHandler() {
         RSetSpeed = (int16) func_limit_ab((int32) RSetSpeed, 0, SPEED_LIMIT);
         LSetSpeed = (int16) func_limit_ab((int32) LSetSpeed, 0, SPEED_LIMIT);
 #if (MOTOR_OPEN_LOOP)
-        /* 开环：占空比 = 目标速度 × 系数，不使用编码器反馈。
-         * 方向固定为正转（目标速度本身恒为非负）。 */
+        /* 开环：不使用编码器反馈，方向固定正转 */
         gpio_set_level(motorDirR, 1);
         gpio_set_level(motorDirL, 1);
+#if (MOTOR_DUTY_RAMP)
+        /* 爬坡诊断：从 10% 开始慢慢加，直到 60% */
+        if (rampDuty < MOTOR_RAMP_MAX) rampDuty += MOTOR_RAMP_STEP;
+        pwm_set_duty(motorPwmR, rampDuty);
+        pwm_set_duty(motorPwmL, rampDuty);
+#else
         pwm_set_duty(motorPwmR, (uint16) func_limit_ab((int32) RSetSpeed * MOTOR_DUTY_PER_UNIT, 0, MOTOR_DUTY_LIMIT));
         pwm_set_duty(motorPwmL, (uint16) func_limit_ab((int32) LSetSpeed * MOTOR_DUTY_PER_UNIT, 0, MOTOR_DUTY_LIMIT));
+#endif
 #else
         pwm_set_duty(motorPwmR, motorPIDCalculate(&motorRPID, RSetSpeed, encoderR));
         pwm_set_duty(motorPwmL, motorPIDCalculate(&motorLPID, LSetSpeed, encoderL));
@@ -298,6 +305,7 @@ int8 getAimPos() {
 /* ===== 起跑助推 ===== */
 void motorKickStart(void) {
     kickCnt = MOTOR_KICK_TICKS;
+    rampDuty = MOTOR_RAMP_START;
 }
 
 /* 上电舵机自检：中值 → 一侧 15° → 另一侧 15° → 回中，全程约 0.9 s。
