@@ -13,6 +13,19 @@
  * 需要提速时只改这一个宏，不必重标 8 组参数。 */
 #define SAFE_SPEED_CEILING 400
 
+/* ===== 目标速度硬上限：不超过 2 m/s =====
+ * setSpeed 的单位是「脉冲 / 5 ms」，换算公式：
+ *     上限 = v(m/s) × PULSE_PER_METER / 200
+ * 例：实测 PULSE_PER_METER = 34600 时，2 m/s → 346。
+ * ⚠ PULSE_PER_METER 目前仍是占位值 1000（未实测），直接套公式只有 10，车会完全不动，
+ *   所以这里先给实测前的保守值；推车 1 m 标定完 PULSE_PER_METER 后请按公式重算。 */
+#define MAX_SPEED_MPS      2
+#define MAX_SET_SPEED      300
+
+/* 上电舵机自检摆幅：左右各 15°。
+ * 200 Hz 下 1 duty = 0.5 µs；常见舵机 0.5 ms ≈ 60°，故 15° ≈ 250 duty。 */
+#define SERVO_TEST_SWING   250
+
 /* ===== 低速试车模式 =====
  * 0 = 正常比赛
  * 1 = 试车：把所有档位的目标速度压到 LOW_SPEED_TEST_CAP，
@@ -72,6 +85,7 @@ void faultReset(void);
 #define ALONG_R 99
 
 volatile extern int16 setSpeed, handle, encoderL, encoderR;
+void servoSelfTest(void);   // 上电舵机自检：左右各摆 SERVO_TEST_SWING（≈15°）
 void motorInit(int16 c11, int16 c33, int16 c44, int16 c55, int16 c77);
 void setServoDuty(int8 duty);
 void alongLine(Point roadLine[], int16 count, int16 aimPos);

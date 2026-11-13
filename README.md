@@ -157,6 +157,14 @@ Program Size: data=107.6  edata+hdata=8192  xdata=56294  const=50701  code=97140
 > | **闪 3 下** | 未标定一圈就按了发车键（先推车走一圈按 B3） |
 > | 灭 | 正常 |
 
+> **上电自检（无需屏幕）**：蓝灯亮 200 ms → **舵机左右各摆约 15°**（`Motor.h` 的 `SERVO_TEST_SWING`，全程约 0.9 s）→ 回中。
+> 舵机不动说明信号线/供电有问题，与电机无关。
+
+> **速度硬上限**：`Motor.h` 的 `MAX_SET_SPEED`（默认 300）与 `SAFE_SPEED_CEILING` 取小值生效。
+> 该值的单位是「脉冲 / 5 ms」，换算：**上限 = v(m/s) × `PULSE_PER_METER` / 200**。
+> 现在 `PULSE_PER_METER` 还是占位值 1000，直接套公式只有 10（车会完全不动），所以先给保守值；
+> 推车 1 m 标定完 `PULSE_PER_METER` 后按公式重算即可精确到 2 m/s。
+
 上电后会先用一帧原始灰度图确认摄像头正常，再显示待发车信息（`ODO / LAP / THR`）。
 
 ### 6.1 视觉单测模式（`VISION_ONLY`）

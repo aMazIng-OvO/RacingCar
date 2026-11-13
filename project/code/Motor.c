@@ -260,7 +260,8 @@ void setServoDuty(int8 d) {
 #if (LOW_SPEED_TEST)
         setSpeed = (int16) func_limit_ab((int32) target, 0, LOW_SPEED_TEST_CAP);
 #else
-        setSpeed = (int16) func_limit_ab((int32) target, 0, SAFE_SPEED_CEILING);
+        setSpeed = (int16) func_limit_ab((int32) target, 0,
+                                         (MAX_SET_SPEED < SAFE_SPEED_CEILING) ? MAX_SET_SPEED : SAFE_SPEED_CEILING);
 #endif
     }
     R = d < 0 ? -r : r;
@@ -269,6 +270,26 @@ void setServoDuty(int8 d) {
 
 int8 getAimPos() {
     return c3;
+}
+
+/* 上电舵机自检：中值 → 一侧 15° → 另一侧 15° → 回中，全程约 0.9 s。
+ * 用来确认舵机供电、信号线、机械行程是否正常；电机完全不参与。 */
+void servoSelfTest(void) {
+    int16 i;
+    pwm_init(PWME_CH3P_PA4, 200, steerMid);
+    system_delay_ms(200);
+    for (i = 0; i <= SERVO_TEST_SWING; i += 25) { // 中值 → 一端
+        pwm_set_duty(PWME_CH3P_PA4, steerMid - i);
+        system_delay_ms(20);
+    }
+    for (i = SERVO_TEST_SWING; i >= -SERVO_TEST_SWING; i -= 25) { // → 另一端
+        pwm_set_duty(PWME_CH3P_PA4, steerMid - i);
+        system_delay_ms(20);
+    }
+    for (i = -SERVO_TEST_SWING; i <= 0; i += 25) { // 回中
+        pwm_set_duty(PWME_CH3P_PA4, steerMid - i);
+        system_delay_ms(20);
+    }
 }
 
 void motorInit(int16 c11, int16 c33, int16 c44, int16 c55, int16 c77) {

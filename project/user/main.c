@@ -149,6 +149,7 @@ void main(void) {
     gpio_set_level(STATUS_LED_PIN, STATUS_LED_ON);
     system_delay_ms(200);
     gpio_set_level(STATUS_LED_PIN, STATUS_LED_OFF);
+    servoSelfTest(); //上电舵机自检：左右各摆约 15°，约 0.9 s（电机不参与）
     //gpio_init(IO_P04, GPO, 0, GPO_PUSH_PULL); //示波器
     { //等 DMA 中断搬入第一帧完整快照再估阈值（带超时，防止摄像头异常时死等）
         uint16 wait = 0;
