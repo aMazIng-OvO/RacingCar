@@ -99,13 +99,13 @@ volatile extern int16 setSpeed, handle, encoderL, encoderR;
  * MAX_SET_SPEED 限的是「目标速度」，PID 打满时照样能给 100% 占空比；
  * MOTOR_DUTY_LIMIT 直接限制 PID 的输出（= 占空比），无论目标多大、积分怎么积，
  * 电机功率都不会超过这个值。调试期先压到 30%，稳了再逐级提到 6000/8000/10000。 */
-#define MOTOR_DUTY_LIMIT   3000
+#define MOTOR_DUTY_LIMIT   1000   // 10%：目前的最低档，先确认"能有多慢"
 
 /* ===== 起跑助推 =====
  * 发车后先用固定占空比推一段时间，破开静摩擦再交给 PID。
  * 目的：避免"车起不来 → PID 积分打满 → 一推就全速冲出去"。 */
 #define MOTOR_KICK_TICKS   60      // 60 × 5 ms = 300 ms
-#define MOTOR_KICK_DUTY    3000    // 30% 占空比（不超过 MOTOR_DUTY_LIMIT）
+#define MOTOR_KICK_DUTY    2000    // 20%：起跑助推比巡航上限高一档，用来破静摩擦
 
 void motorKickStart(void);  // 由 raceStart() 调用
 void servoSelfTest(void);   // 上电舵机自检：左右各摆 SERVO_TEST_SWING（≈15°）
