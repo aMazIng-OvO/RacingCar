@@ -39,7 +39,7 @@
  *     并临时关闭"两侧边界全丢 / 视野 5 点全暗"的出界保护
  *     （桌面上没有赛道、摄像头看不到线时也能让车慢慢跑，用来验证电机/舵机/编码器）
  * 正式比赛前必须改回 0 */
-#define LOW_SPEED_TEST      1    // 台架调试：同时关闭"出界保护"（桌上看不到线也不会停车）
+#define LOW_SPEED_TEST      0    // 0 = 出界保护生效（比赛模式）
 #define LOW_SPEED_TEST_CAP  150
 
 /* ===== 异常状态检测（faultFlags 位标志，屏幕显示 ERR:<十进制>） =====
@@ -84,13 +84,13 @@ volatile extern int16 setSpeed, handle, encoderL, encoderR;
  * MAX_SET_SPEED 限的是「目标速度」，PID 打满时照样能给 100% 占空比；
  * MOTOR_DUTY_LIMIT 直接限制 PID 的输出（= 占空比），无论目标多大、积分怎么积，
  * 电机功率都不会超过这个值。调试期先压到 30%，稳了再逐级提到 6000/8000/10000。 */
-#define MOTOR_DUTY_LIMIT   1600   // 16%：严格低速（10% 带不动车，16% 是"能跑起来的最小档"附近）
+#define MOTOR_DUTY_LIMIT   3100   // 31%：闭环 PID 的占空比硬上限
 
 /* ===== 开环模式：电机不跑速度闭环，占空比直接由目标速度线性映射 =====
  *   1 = 开环（编码器只用于蓝灯指示与里程，不参与控制）
  *   0 = 正常闭环 PID
  * 用途：排除"反馈符号/增益不匹配"这一类问题，先确认「给多少占空比就跑多快」。 */
-#define MOTOR_OPEN_LOOP        1
+#define MOTOR_OPEN_LOOP        0
 #define MOTOR_DUTY_PER_UNIT    8    // 每 1 单位 setSpeed 对应的占空比（180 × 8 = 1440，低于 16% 上限）
 
 /* ===== 占空比爬坡诊断（临时） =====
