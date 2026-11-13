@@ -50,6 +50,7 @@ void raceStart(void) {
     handle = 0;
     enableDifSpeed = 1;
     gpio_set_level(IO_P90, 0);
+    motorKickStart(); // 起跑助推：先固定占空比推 300 ms，破静摩擦后再交给 PID
     raceState = RACE_RUNNING;
     stop = 0;
 }

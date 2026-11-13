@@ -29,6 +29,7 @@ static uint16 graceCnt = 0; // 16 位：宽限期按 5 ms 计，需要超过 255
 static uint8 encLostL = 0, encLostR = 0; //编码器无反馈计时
 static uint8 satCnt = 0, revCntL = 0, revCntR = 0; //PID 饱和 / 正反馈计时
 static uint8 outCnt = 0;                           //出界判定消抖计数
+static uint16 kickCnt = 0;                         //起跑助推剩余节拍
 static int16 pidOutL = 0, pidOutR = 0;             //PID 实际输出，供异常检测读取
 
 void faultReset(void) {
@@ -207,6 +208,15 @@ static void pitHandler() {
         pwm_set_duty(PWME_CH3P_PA4, steerMid);
         pwm_set_duty(motorPwmR, motorPIDCalculate(&motorRPID, 0, encoderR));
         pwm_set_duty(motorPwmL, motorPIDCalculate(&motorLPID, 0, encoderL));
+    } else if (kickCnt) {
+        /* 起跑助推：固定占空比、固定正转，绕过 PID；300 ms 后交给 PID */
+        kickCnt--;
+        gpio_set_level(motorDirR, 1);
+        gpio_set_level(motorDirL, 1);
+        pwm_set_duty(motorPwmR, MOTOR_KICK_DUTY);
+        pwm_set_duty(motorPwmL, MOTOR_KICK_DUTY);
+        pwm_set_duty(PWME_CH3P_PA4, steerMid + steerPIDCalculate(&steerPid, duty));
+        if (kickCnt == 0) controlReset(); // 助推结束，PID 从干净状态接管
     } else {
         pwm_set_duty(PWME_CH3P_PA4, steerMid + steerPIDCalculate(&steerPid, duty));
         slow = !borderIn ? 1 : (currentSpeed < 350 ? 0 : slow);
@@ -276,6 +286,11 @@ int8 getAimPos() {
     return c3;
 }
 
+/* ===== 起跑助推 ===== */
+void motorKickStart(void) {
+    kickCnt = MOTOR_KICK_TICKS;
+}
+
 /* 上电舵机自检：中值 → 一侧 15° → 另一侧 15° → 回中，全程约 0.9 s。
  * 用来确认舵机供电、信号线、机械行程是否正常；电机完全不参与。 */
 void servoSelfTest(void) {
@@ -307,10 +322,10 @@ void motorInit(int16 c11, int16 c33, int16 c44, int16 c55, int16 c77) {
              395);
     PIDInit(&motorLPID, 0,
             3000, 50, 50,
-            10000);
+            MOTOR_DUTY_LIMIT); // 输出上限 = 占空比上限
     PIDInit(&motorRPID, 1,
             3000, 50, 50,
-            10000);
+            MOTOR_DUTY_LIMIT);
     pwm_init(PWME_CH3P_PA4, 200, steerMid);
     gpio_init(motorDirR, GPO, 1, GPO_PUSH_PULL);
     gpio_init(motorDirL, GPO, 1, GPO_PUSH_PULL);
