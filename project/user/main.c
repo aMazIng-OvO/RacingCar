@@ -62,7 +62,7 @@
 /* ===== 调试：开环固定占空比（不跑 PID） =====
  *   1 = 上电即以 TEST_OPEN_DUTY 让两轮慢速前进，仅用蓝灯指示编码器方向，
  *       用于把「电机/驱动/编码器链路」与「PID 参数」分开排查；0 = 正常比赛流程 */
-#define TEST_OPEN_LOOP     1
+#define TEST_OPEN_LOOP     0
 #define TEST_OPEN_DUTY     1500    // 0~10000，1500 = 15% 占空比
 
 int16 LCorner, RCorner, centerLineCount, RUN_MODE = FORWARD;
@@ -99,12 +99,8 @@ static void applySpeedSet(uint8 idx) {
 
 void loadRoad();
 
-/* 是否检测到赛道（由每次 loadRoad 的结果更新），上电后若一直不在赛道上，蓝灯慢闪 */
-static uint8 onTrackFlag = 0;
-
-/* ===== 蓝灯统一指示（优先级从上到下） =====
+/* ===== 蓝灯指示（不含赛道检测） =====
  *   编码器/PID 故障  → 常亮
- *   不在赛道上       → 慢闪 1 Hz（上电自检用：放回赛道后自动停闪）
  *   编码器计数递增   → 快闪 5 Hz（向前推行）
  *   编码器计数倒扣   → 常亮（反向）
  *   无变化           → 熄灭 */
@@ -117,12 +113,6 @@ static void updateStatusLed(void) {
         ledWant = STATUS_LED_ON; // 故障：常亮
         ledPhase = 1;
         ledMs = 0;
-    } else if (!onTrackFlag) {
-        if (++ledMs >= 500) { // 不在赛道：慢闪
-            ledMs = 0;
-            ledPhase = (uint8) (!ledPhase);
-        }
-        ledWant = ledPhase ? STATUS_LED_ON : STATUS_LED_OFF;
     } else if (currentSpeed >= 3) {
         if (++ledMs >= 100) { // 前进：快闪
             ledMs = 0;
@@ -139,6 +129,58 @@ static void updateStatusLed(void) {
         ledMs = 0;
     }
     gpio_set_level(STATUS_LED_PIN, ledWant);
+}
+
+/* ===== 按键模块（B2/B3/B4，低电平有效，主循环 1 ms 调用一次） =====
+ * 20 ms 消抖，提供「按下沿 / 松开沿」事件，B4 支持长按。
+ *   B2 = 发车      B3 = 紧急停车      B4：短按 = 舵机自检，长按 ≥2 s = 标定一圈 */
+#define BTN_B2          0x01
+#define BTN_B3          0x02
+#define BTN_B4          0x04
+#define BTN_DEBOUNCE    20      // 连续 20 次（约 20 ms）采样一致才认
+#define BTN_LONG_MS     2000    // B4 长按阈值（ms）
+
+static uint8 btnDown = 0;        // 稳定状态位图（1 = 按下）
+static uint8 btnDebCnt = 0;      // 消抖计数
+static uint16 btnHoldMs = 0;     // B4 按住时长
+static uint8 btnLongFired = 0;   // B4 本次按住已触发过长按
+static uint8 btnLastWasLong = 0; // 上一次 B4 松开时是否为长按
+static uint8 btnPressEdge = 0;   // 本次扫描刚按下的位
+static uint8 btnReleaseEdge = 0;  // 本次扫描刚松开的位
+static uint8 btnLongEvent = 0;   // B4 达到长按阈值（一次性）
+
+static void btnScan(void) {
+    uint8 raw = 0, changed;
+
+    btnPressEdge = 0;
+    btnReleaseEdge = 0;
+    if (!gpio_get_level(IO_PB2)) raw |= BTN_B2;
+    if (!gpio_get_level(IO_PB3)) raw |= BTN_B3;
+    if (!gpio_get_level(IO_PB4)) raw |= BTN_B4;
+
+    if (raw != btnDown) {
+        if (++btnDebCnt >= BTN_DEBOUNCE) {
+            btnDebCnt = 0;
+            changed = (uint8) (raw ^ btnDown);
+            btnPressEdge = (uint8) (changed & raw);        // 松 → 按
+            btnReleaseEdge = (uint8) (changed & btnDown);  // 按 → 松
+            btnDown = raw;
+        }
+    } else {
+        btnDebCnt = 0;
+    }
+
+    if (btnDown & BTN_B4) { // 长按计时
+        if (btnHoldMs < BTN_LONG_MS) btnHoldMs++;
+        if (btnHoldMs >= BTN_LONG_MS && !btnLongFired) {
+            btnLongFired = 1;
+            btnLongEvent = 1;
+        }
+    } else {
+        btnLastWasLong = (uint8) (btnHoldMs >= BTN_LONG_MS);
+        btnHoldMs = 0;
+        btnLongFired = 0;
+    }
 }
 
 /* 发车/急停时统一复位：元素状态机、补线偏移、控制量与比赛相关全局量。
@@ -221,7 +263,6 @@ void main(void) {
         system_delay_ms(200);
         pwm_set_duty(PWMB_CH3_P76, TEST_OPEN_DUTY);
         pwm_set_duty(PWMB_CH1_P74, TEST_OPEN_DUTY);
-        onTrackFlag = 1; // 本模式不看图像，屏蔽"不在赛道"慢闪
         while (1) {
             system_delay_ms(20);
             rawR = encoder_get_count(PWMA_ENCODER);
@@ -316,28 +357,26 @@ void main(void) {
         static uint8 lastRaceState = RACE_IDLE; // 用于检测 raceState 变化并刷新屏幕提示（初始 IDLE，保留发车提示）
         static uint16 lastFault = 0;       // 故障位变化时也刷一次屏（16 位，含 PID 异常位）
         static uint16 elemTicks = 0;       // 元素状态机停留帧数（超时兜底）
-        static uint16 b4Hold = 0;          // B4 按住时长（1 ms 节拍），用于区分短按/长按
         /* 按键与里程判定不依赖相机帧：摄像头停帧时仍能急停 / 收车 */
-        uint8 b2 = gpio_get_level(IO_PB2), b3 = gpio_get_level(IO_PB3), b4 = gpio_get_level(IO_PB4);
+        btnScan();
         /* B2：发车（完赛或急停后也可重新发车） */
-        if (topBtn && !b2 && (raceState == RACE_IDLE || raceState == RACE_STOPPED)) {
-            faultReset(); // 每次发车清空上一轮故障位（停车时保留，便于赛后查看原因）
-            raceStart();
+        if (btnPressEdge & BTN_B2) {
+            if (raceState == RACE_IDLE || raceState == RACE_STOPPED) {
+                faultReset(); // 每次发车清空上一轮故障位（停车时保留，便于赛后查看原因）
+                raceStart();
+            }
         }
         /* B3：紧急停车 */
-        if (bottomBtn && !b3 && (raceState == RACE_RUNNING || raceState == RACE_BRAKING)) raceStopNow();
-        /* B4：短按 = 舵机左右各摆 15°（自检）；长按 ≥2 s = 标定一圈 */
-        if (!b4) {
-            if (b4Hold < 2000) {
-                if (++b4Hold == 2000 && raceState == RACE_IDLE) raceSetLap(); // 长按到 2 s 触发一次
-            }
-        } else {
-            if (imBtn && b4Hold > 0 && b4Hold < 2000) servoSelfTest(); // 松开时判定为短按
-            b4Hold = 0;
+        if (btnPressEdge & BTN_B3) {
+            if (raceState == RACE_RUNNING || raceState == RACE_BRAKING) raceStopNow();
         }
-        topBtn = b2;
-        bottomBtn = b3;
-        imBtn = b4;
+        /* B4 长按 ≥2 s：标定一圈（按住到阈值时触发一次） */
+        if (btnLongEvent) {
+            btnLongEvent = 0;
+            if (raceState == RACE_IDLE) raceSetLap();
+        }
+        /* B4 短按（松开时判定，且本次不是长按）：舵机左右各摆 15° */
+        if ((btnReleaseEdge & BTN_B4) && !btnLastWasLong) servoSelfTest();
         raceTask();
         /* 状态或故障位变化时刷一次屏（只在切换点发生，开销可忽略）；
          * 之前发车后屏幕仍停在三行静态提示上，容易被误认为停车了 */
@@ -362,8 +401,6 @@ void main(void) {
         if (frameBusy) {
             noFrameTicks = 0;   // 收到完整帧，喂狗
             loadRoad();
-            /* 是否在赛道上：任一侧边界超过 10 点即认为在赛道（上电自检与蓝灯都用它） */
-            onTrackFlag = (uint8) (LRoadCount > 10 || RRoadCount > 10);
             if (raceState == RACE_RUNNING || raceState == RACE_BRAKING) {
                 if (ENABLE_CROSS && (RUN_MODE == CROSS ||
                                      (RUN_MODE == FORWARD && ((RCorner && RRoadCount > 2) || (LCorner && LRoadCount > 2)) &&

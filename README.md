@@ -144,8 +144,7 @@ Program Size: data=107.6  edata+hdata=8192  xdata=56294  const=50701  code=97140
 
 > 一圈的长度由 B4 长按标定后确定，**未标定前按 B2 不会发车**（蓝灯闪 3 下）。
 
-> **上电赛道自检**：摄像头初始化后每帧判断一次是否看得到赛道（任一侧边界 > 10 点即视为在赛道）。
-> 看不到赛道时蓝灯**慢闪 1 Hz**，把车放回赛道后自动停闪——这样不用屏幕也能知道"车没放对位置"。
+
 
 > 按键引脚为实车实测值：原工程（浙江工商大学那套板）是 P02/P01/P32，本车实测为 **PB2/PB3/PB4**（用扫描固件逐个确认）。PB0/PB1 是拨码开关、PB6/PB7 是摄像头 SCCB，互不冲突。若换板，只需改 `main.c` 里 `gpio_init(IO_PB2/3/4, ...)` 与三处 `gpio_get_level()`。
 
@@ -158,7 +157,6 @@ Program Size: data=107.6  edata+hdata=8192  xdata=56294  const=50701  code=97140
 > | 蓝灯 | 含义 |
 > |---|---|
 > | 上电亮 200 ms 后灭 | 自检正常 |
-> | **慢闪（1 Hz）** | **不在赛道上**（看画面里没有任何边界）——把车放回赛道即停闪 |
 > | **快闪（约 5 Hz）** | 编码器计数**递增**（车轮正向转动）——推车或行驶时都应是这样 |
 > | **常亮** | 编码器计数**倒扣**（反向），或编码器掉线 / PID 异常（已紧急停车） |
 > | **闪 3 下** | 未标定一圈就按了发车键（先推车走一圈按 B3） |
@@ -197,6 +195,32 @@ Program Size: data=107.6  edata+hdata=8192  xdata=56294  const=50701  code=97140
 调参对应关系：`L`/`R` 长期为 0 → 降 `EDGE_DIFF`、放宽 `EDGE_RATIO`；边界跑偏 → 重设 `HIDE_ROW/HIDE_COL_L/HIDE_COL_R`；`LC`/`RC` 恒为 0 → 降 `CORNER_COS100`；中线整体偏一侧 → 调 `centerLineDistance`。
 
 > 预览刷新率受 IPS200 的 SPI 带宽限制（约 10~20 fps），以 `FRAME` 递增为准。**装车后务必把 `VISION_ONLY` 改回 0**，否则程序会停在预览循环、无法进入选档与发车。
+
+### 6.2 引脚分配总表
+
+| 功能 | 引脚 | 说明 / 代码位置 |
+|---|---|---|
+| **摄像头 数据 D0~D7** | **P20~P27** | `zf_device_mt9v03x.h:51-58`（不可改） |
+| 摄像头 SCCB SCL | **PB6** | `zf_device_mt9v03x.h:47` |
+| 摄像头 SCCB SDA | **PB7** | `zf_device_mt9v03x.h:48` |
+| FIFO VSY / RCK / WE | **P33 / P37 / P41** | `zf_device_mt9v03x_dma.h:11-13` |
+| FIFO WRST / OE / RRST | **P73 / P72 / P43** | `zf_device_mt9v03x_dma.h:14-16` |
+| **IPS200 SCL / SDA** | **P83 / P81** | SPI2_CH4（屏幕已禁用，`ENABLE_SCREEN=0`） |
+| IPS200 RST / DC / CS / BLK | **P70 / P71 / P35 / P82** | 同上 |
+| **舵机信号** | **PA4** | `Motor.c` `PWME_CH3P_PA4`，200 Hz，中值 2975 |
+| **电机 右 PWM / DIR** | **P76 / P77** | `Motor.c` `motorPwmR` / `motorDirR`，17 kHz |
+| **电机 左 PWM / DIR** | **P74 / P75** | `Motor.c` `motorPwmL` / `motorDirL`，17 kHz |
+| **编码器 右（A/B）** | **P60 / P62** | `PWMA_ENCODER` |
+| **编码器 左（A/B）** | **P40 / P42** | `PWMC_ENCODER` |
+| **按键 B2（发车）** | **PB2** | `main.c` `btnScan()` |
+| **按键 B3（急停）** | **PB3** | 同上 |
+| **按键 B4（自检/标定）** | **PB4** | 同上 |
+| **拨码 SW1 / SW2** | **PB0 / PB1** | 上电自动选档（4 组） |
+| **蓝色状态灯** | **P52** | `Motor.h` `STATUS_LED_PIN`，低电平点亮 |
+| 蜂鸣器（本车未装） | P90 | `gpio_init(IO_P90, GPO, ...)` |
+| 示波器调试脚（未用） | P04 | 注释状态 |
+
+> 电机与编码器的左右对应、PWM/DIR 顺序都以本表为准；换板时只需要改本表涉及的宏与 `gpio_init()`。
 
 ## 7. 主要可调参数
 
