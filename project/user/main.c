@@ -305,6 +305,7 @@ void main(void) {
         static uint8 lastRaceState = RACE_IDLE; // 用于检测 raceState 变化并刷新屏幕提示（初始 IDLE，保留发车提示）
         static uint16 lastFault = 0;       // 故障位变化时也刷一次屏（16 位，含 PID 异常位）
         static uint8 borderLost = 0;       // 连续看不到边界的帧数
+        static uint16 elemTicks = 0;       // 元素状态机停留帧数（超时兜底）
         /* 按键与里程判定不依赖相机帧：摄像头停帧时仍能急停 / 收车 */
         uint8 tBtn = gpio_get_level(IO_PB2), bBtn = gpio_get_level(IO_PB3), sBtn = gpio_get_level(IO_PB4);
         if (topBtn && !tBtn && (raceState == RACE_IDLE || raceState == RACE_STOPPED)) {
@@ -377,6 +378,15 @@ void main(void) {
                     runLRound(LCorner, RCorner);
                 } else
                     alongLine(centerLine, centerLineCount, getAimPos());
+
+                /* A3：元素状态机超时兜底——卡在十字/环岛超过 300 帧（约 3 s）就强制
+                 * 回 FORWARD，否则会一直用固定 aim 打角、全速冲出赛道 */
+                if (RUN_MODE == FORWARD)
+                    elemTicks = 0;
+                else if (++elemTicks > 300) {
+                    elemTicks = 0;
+                    elementReset();
+                }
             } else if (raceState == RACE_IDLE) {
                 raceShow();
             }
@@ -411,17 +421,21 @@ void loadRoad() {
     resampleRoad(RRoad, &RRoadCount, 0, 3);
     LCorner = findCorner(LRoad, LRoadCount, 0);
     RCorner = findCorner(RRoad, RRoadCount, 0);
-    /* borderIn：左右各自独立判定，标志绝不跨分支复用；索引前先确认 count>0 */
-    for (idx = 0; idx < LRoadCount; idx += 2)
-        if (LRoad[idx].y > 94) { leftFound = 1; break; }
-    if (leftFound && LRoadCount > 0 &&
-        LRoad[func_limit_ab(idx, 0, LRoadCount - 1)].x > borderInTriggerDistance)
-        borderIn = 1;
-    else {
-        for (idx = 0; idx < RRoadCount; idx += 2)
-            if (RRoad[idx].y < 94) { rightFound = 1; break; }
-        borderIn = (uint8) (rightFound && RRoadCount > 0 &&
-                            RRoad[func_limit_ab(idx, 0, RRoadCount - 1)].x > borderInTriggerDistance);
+    /* borderIn：左右各自独立判定，标志绝不跨分支复用；索引前先确认 count>0。
+     * B4：只在普通循迹（FORWARD）时重算——环岛/十字阶段由元素函数维持 borderIn=1，
+     * 若每帧都在这里覆盖，alongLine 的入弯减速（slow）就永远拿不到 1。 */
+    if (RUN_MODE == FORWARD) {
+        for (idx = 0; idx < LRoadCount; idx += 2)
+            if (LRoad[idx].y > 94) { leftFound = 1; break; }
+        if (leftFound && LRoadCount > 0 &&
+            LRoad[func_limit_ab(idx, 0, LRoadCount - 1)].x > borderInTriggerDistance)
+            borderIn = 1;
+        else {
+            for (idx = 0; idx < RRoadCount; idx += 2)
+                if (RRoad[idx].y < 94) { rightFound = 1; break; }
+            borderIn = (uint8) (rightFound && RRoadCount > 0 &&
+                                RRoad[func_limit_ab(idx, 0, RRoadCount - 1)].x > borderInTriggerDistance);
+        }
     }
     if (LCorner) {
         if (LCorner < 3) LCorner = 0;

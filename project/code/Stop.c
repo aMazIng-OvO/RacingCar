@@ -7,6 +7,7 @@
 volatile int32 odometer = 0;
 int32 lapPulse = LAP_PULSE_DEFAULT, brakePulse = BRAKE_PULSE_DEFAULT;
 volatile uint8 raceState = RACE_IDLE;
+volatile uint8 lapCalibrated = 0; // 是否已按 BOTTOM 标定过一圈（0 = 未标定，禁止发车）
 
 void stopInit(void) {
     elementReset();
@@ -16,9 +17,19 @@ void stopInit(void) {
     lapPulse = LAP_PULSE_DEFAULT;
     brakePulse = BRAKE_PULSE_DEFAULT;
     raceState = RACE_IDLE;
+    lapCalibrated = 0; // 每次上电都要重新标定（脉冲/米是整车常数，但以实推为准）
 }
 
 void raceStart(void) {
+    /* A1：未标定一圈就发车，里程会在几百毫秒内越过 lapPulse-brakePulse，
+     * 表现为"起步跑一下就自己停"，而屏幕上看不出任何原因。这里直接拒绝发车。 */
+    if (!lapCalibrated) {
+        ips200_clear(RGB565_WHITE);
+        ips200_show_string(0, 130, "CALIB LAP FIRST");
+        ips200_show_string(0, 160, "push 1 lap, press B3");
+        ips200_show_string(0, 190, "then B2 to start");
+        return;
+    }
     // 先复位全部元素/控制状态，最后才解除 stop，
     // 避免 PIT 在 stop=0 与 raceState=RUNNING 之间的窗口用旧目标驱动
     elementReset();
@@ -46,6 +57,7 @@ void raceSetLap(void) {
         // 提前刹车量按"刹车距离 / 一圈总距离"的比例换算，不依赖 PULSE_PER_METER 的绝对值
         brakePulse = lapPulse * BRAKE_DISTANCE_CM / (LAP_DISTANCE_CM + STOP_OFFSET_CM);
         if (brakePulse >= lapPulse) brakePulse = lapPulse >> 3; //参数填错时兜底，避免发车即进刹车段
+        lapCalibrated = 1; // 标定成功，才允许发车
     }
 }
 

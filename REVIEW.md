@@ -140,3 +140,21 @@ system_delay_ms(150);
 - **`PID_SAT` 是唯一一个会在正常工况下误触发的判据**，建议按 §H-1 加上"没达到目标"的条件，或直接删除。
 
 整体评价：**异常检测的架构合理、侵入性小，主要风险集中在阈值与判据的语义上，而不是实现上。**
+
+---
+
+## 六、第二轮修复（2026-11-13，覆盖外部审读提出的 A/B 级问题）
+
+| 编号 | 问题 | 修复 |
+|---|---|---|
+| **A1** | `PULSE_PER_METER` 未标定就发车 → 里程在几百毫秒内越过刹车点，车"起步就跑一下就停"，屏幕只显示 `STOP ERR:0`，无法与正常完赛区分 | `Stop.c` 新增 `lapCalibrated` 标志：只有 `raceSetLap()` 成功才置 1；`raceStart()` 在未标定时**拒绝发车**并显示 `CALIB LAP FIRST / push 1 lap, press B3 / then B2 to start` |
+| **A2** | 出界保护用 5 个固定像素、单拍判定 → 十字/环岛中央黑区会误判停车 | `Motor.c` 出界判定改为**连续 3 拍（15 ms）成立**才触发；并把 `FAULT_NO_BORDER`（连续约 2 s 无边界）纳入停车条件 |
+| **A3** | 元素状态机无超时 → 卡在 `CROSS_IN`/`ROUND_EXIT` 会一直用固定 aim 打角、全速冲出 | `main.c` 增加 `elemTicks`：`RUN_MODE != FORWARD` 累计超过 **300 帧（约 3 s）** 就 `elementReset()` 强制回 `FORWARD` |
+| **B4** | `borderIn` 每帧被 `loadRoad()` 无条件重算，覆盖元素函数设的 1 → 入弯减速 `slow` 失效 | `main.c` 的 `borderIn` 计算加 `if (RUN_MODE == FORWARD)`，元素阶段不再覆盖 |
+
+编译：`0 Error / 1 Warning`（仅逐飞库 C183），`data=104.5  xdata=51330  const=48860  code=78113`。
+
+**仍待确认（需实车）**
+
+- `PULSE_PER_METER` 真实值：推车 1 m 读 `ODO` 增量（`raceShow()` 每 0.5 s 刷新），填回 `Stop.h`；
+- `interrupt_set_priority` 在本芯片上是"数值大优先"还是"数值小优先"：决定 B1 的撕裂窗口是否成立，可用 `IO_P04` 翻转 + 示波器确认控制周期是否被拉长。

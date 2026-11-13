@@ -27,6 +27,7 @@ extern volatile int16 LRoadCount, RRoadCount;
 volatile uint16 faultFlags = 0;
 static uint8 encLostL = 0, encLostR = 0, stallCnt = 0, graceCnt = 0;
 static uint8 satCnt = 0, revCntL = 0, revCntR = 0; //PID 饱和 / 正反馈计时
+static uint8 outCnt = 0;                           //出界判定消抖计数
 static int16 pidOutL = 0, pidOutR = 0;             //PID 实际输出，供异常检测读取
 
 void faultReset(void) {
@@ -184,14 +185,24 @@ static void pitHandler() {
     currentSpeed = (int16) func_limit(avg, 32767);
     odometer += avg;   // IDLE 下同样累加，供推车标定一圈里程
     faultScan();       // 异常状态检测（只读，不干预控制，除致命故障外）
-    // 冲出赛道保护：跑车过程中两侧边界全部丢失，或视野内 5 个采样点全暗，判定出界停车
+    /* 冲出赛道保护：跑车过程中两侧边界全部丢失，或视野内 5 个采样点全暗。
+     * A2：改为连续 3 拍（15 ms）都成立才判定——十字路口 / 环岛中央那片黑区会同时命中
+     * 这 5 个点，原来单拍即停，会在过元素时把车"莫名其妙停死"。 */
+    if (raceState == RACE_RUNNING || raceState == RACE_BRAKING) {
+        if ((!LRoadCount && !RRoadCount) ||
+            (mt9v03x_frame[84][95] < threshold && mt9v03x_frame[88][47] < threshold &&
+             mt9v03x_frame[87][141] < threshold && mt9v03x_frame[75][120] < threshold &&
+             mt9v03x_frame[74][64] < threshold)) {
+            if (outCnt < 10) outCnt++;
+        } else
+            outCnt = 0;
+    } else
+        outCnt = 0;
+
     if (stop
 #if (!LOW_SPEED_TEST)
-        || ((raceState == RACE_RUNNING || raceState == RACE_BRAKING) &&
-            ((!LRoadCount && !RRoadCount) ||
-             (mt9v03x_frame[84][95] < threshold && mt9v03x_frame[88][47] < threshold &&
-              mt9v03x_frame[87][141] < threshold && mt9v03x_frame[75][120] < threshold &&
-              mt9v03x_frame[74][64] < threshold)))
+        || (outCnt >= 3)                  // 出界消抖：连续 15 ms 成立
+        || (faultFlags & FAULT_NO_BORDER) // 连续约 2 s 看不到边界也停车
 #endif
        ) {
         // 出界保护必须与比赛状态同步，否则 raceTask 永远等不到里程且 TOP 键无法恢复
