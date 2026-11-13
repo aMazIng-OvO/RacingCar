@@ -31,11 +31,11 @@ void raceStart(void) {
         ips200_show_string(0, 160, "push 1 lap, press B3");
         ips200_show_string(0, 190, "then B2 to start");
 #else
-        /* 屏幕已损坏：用「三短鸣」代替提示，表示未标定一圈、拒绝发车 */
+        /* 屏幕与蜂鸣器都不可用：用蓝灯闪 3 下表示「未标定一圈，拒绝发车」 */
         for (i = 0; i < 3; i++) {
-            gpio_set_level(IO_P90, BEEP_ON_LEVEL);
+            gpio_set_level(STATUS_LED_PIN, STATUS_LED_ON);
             system_delay_ms(80);
-            gpio_set_level(IO_P90, BEEP_OFF_LEVEL);
+            gpio_set_level(STATUS_LED_PIN, STATUS_LED_OFF);
             system_delay_ms(120);
         }
 #endif

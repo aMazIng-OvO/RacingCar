@@ -39,6 +39,13 @@ void faultReset(void);
 #define BEEP_ON_LEVEL      1
 #define BEEP_OFF_LEVEL     0
 
+/* ===== 状态指示：核心板蓝色 LED（本车没有蜂鸣器，用蓝灯代替） =====
+ * 编码器反馈异常 / PID 异常时点亮，正常熄灭。
+ * 引脚按实际接线改；若亮灭相反，把 ON / OFF 两个值对调。 */
+#define STATUS_LED_PIN      IO_P52
+#define STATUS_LED_ON       1
+#define STATUS_LED_OFF      0
+
 /* ===== 屏幕开关 =====
  * 本车 IPS200 已损坏：置 0 后所有 ips200_* 调用被替换成空操作，
  * 编译期直接去掉显示代码（不影响控制、不影响任何状态机）。

@@ -143,7 +143,8 @@ void main(void) {
     gpio_init(IO_PB2, GPI, 0, GPI_PULL_UP);  // TOP
     gpio_init(IO_PB3, GPI, 0, GPI_PULL_UP);  // BOTTOM
     gpio_init(IO_PB4, GPI, 0, GPI_PULL_UP);  // IMAGE
-    gpio_init(IO_P90, GPO, 0, GPO_PUSH_PULL); //蜂鸣器
+    gpio_init(IO_P90, GPO, 0, GPO_PUSH_PULL); //蜂鸣器（本车未装，保留不影响）
+    gpio_init(STATUS_LED_PIN, GPO, STATUS_LED_OFF, GPO_PUSH_PULL); //蓝色状态灯
     //gpio_init(IO_P04, GPO, 0, GPO_PUSH_PULL); //示波器
     { //等 DMA 中断搬入第一帧完整快照再估阈值（带超时，防止摄像头异常时死等）
         uint16 wait = 0;
@@ -335,12 +336,12 @@ void main(void) {
                 ips200_show_string(0, 130, "READY");
             ips200_show_string(0, 160, "ERR:");
             ips200_show_int16(64, 160, (int16) faultFlags);
-            /* 致命故障报警：只在故障位变化时响一次（150 ms），不影响后续控制 */
-            if (faultFlags & FAULT_STOPPED) {
-                gpio_set_level(IO_P90, BEEP_ON_LEVEL);
-                system_delay_ms(150);
-                gpio_set_level(IO_P90, BEEP_OFF_LEVEL);
-            }
+            /* 编码器反馈异常 / PID 异常 → 蓝灯常亮；正常熄灭。
+             * 本车没有蜂鸣器，这盏灯就是唯一的故障指示。 */
+            if (faultFlags & (FAULT_ENC_L_DOWN | FAULT_ENC_R_DOWN | FAULT_PID_REV | FAULT_PID_SAT))
+                gpio_set_level(STATUS_LED_PIN, STATUS_LED_ON);
+            else
+                gpio_set_level(STATUS_LED_PIN, STATUS_LED_OFF);
         }
 
         if (frameBusy) {
