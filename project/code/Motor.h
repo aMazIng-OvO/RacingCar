@@ -99,20 +99,20 @@ volatile extern int16 setSpeed, handle, encoderL, encoderR;
  * MAX_SET_SPEED 限的是「目标速度」，PID 打满时照样能给 100% 占空比；
  * MOTOR_DUTY_LIMIT 直接限制 PID 的输出（= 占空比），无论目标多大、积分怎么积，
  * 电机功率都不会超过这个值。调试期先压到 30%，稳了再逐级提到 6000/8000/10000。 */
-#define MOTOR_DUTY_LIMIT   3500   // 35%：10% 只能验证限幅生效，带不动车，这里回到能正常跑的功率
+#define MOTOR_DUTY_LIMIT   1600   // 16%：严格低速（10% 带不动车，16% 是"能跑起来的最小档"附近）
 
 /* ===== 开环模式：电机不跑速度闭环，占空比直接由目标速度线性映射 =====
  *   1 = 开环（编码器只用于蓝灯指示与里程，不参与控制）
  *   0 = 正常闭环 PID
  * 用途：排除"反馈符号/增益不匹配"这一类问题，先确认「给多少占空比就跑多快」。 */
 #define MOTOR_OPEN_LOOP        1
-#define MOTOR_DUTY_PER_UNIT    19   // 每 1 单位 setSpeed 对应的占空比（180 × 19 ≈ 3420 ≈ 上限）
+#define MOTOR_DUTY_PER_UNIT    8    // 每 1 单位 setSpeed 对应的占空比（180 × 8 = 1440，低于 16% 上限）
 
 /* ===== 起跑助推 =====
  * 发车后先用固定占空比推一段时间，破开静摩擦再交给 PID。
  * 目的：避免"车起不来 → PID 积分打满 → 一推就全速冲出去"。 */
 #define MOTOR_KICK_TICKS   60      // 60 × 5 ms = 300 ms
-#define MOTOR_KICK_DUTY    4500    // 45%：起跑助推比巡航上限高一档，用来破静摩擦（仅 300 ms）
+#define MOTOR_KICK_DUTY    2500    // 25%：仅起步 300 ms，用来破静摩擦（巡航仍是 ≤16%）
 
 void motorKickStart(void);  // 由 raceStart() 调用
 void servoSelfTest(void);   // 上电舵机自检：左右各摆 SERVO_TEST_SWING（≈15°）
