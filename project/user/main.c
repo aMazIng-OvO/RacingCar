@@ -89,7 +89,7 @@ void loadRoad();
 #define BTN_B2          0x01
 #define BTN_B3          0x02
 #define BTN_B4          0x04
-#define BTN_DEBOUNCE    20      // 连续 20 次（约 20 ms）采样一致才认
+#define BTN_DEBOUNCE    5       // 连续 5 次采样一致才认（主循环约 1~10 ms，5 次足够消抖）
 #define BTN_LONG_MS     2000    // B4 长按阈值（ms）
 
 static uint8 btnDown = 0;        // 稳定状态位图（1 = 按下）
@@ -156,14 +156,36 @@ void elementReset(void) {
 void main(void) {
     clock_init(SYSTEM_CLOCK_96M);
     debug_init();
+    /* ===== 最早期初始化：状态灯与按键最先就绪 =====
+     * 之前按键在摄像头之后才初始化，一旦摄像头初始化失败，按键会全部失效。 */
+    gpio_init(STATUS_LED_PIN, GPO, STATUS_LED_OFF, GPO_PUSH_PULL); // 蓝色状态灯
+    gpio_init(IO_PB1, GPI, 0, GPI_PULL_UP);   // 拨码 SW2
+    gpio_init(IO_PB0, GPI, 0, GPI_PULL_UP);   // 拨码 SW1
+    gpio_init(IO_PB2, GPI, 0, GPI_PULL_UP);   // B2 发车
+    gpio_init(IO_PB3, GPI, 0, GPI_PULL_UP);   // B3 急停
+    gpio_init(IO_PB4, GPI, 0, GPI_PULL_UP);   // B4 自检 / 标定
+    gpio_init(IO_P90, GPO, 0, GPO_PUSH_PULL); // 蜂鸣器（本车未装）
+    { /* 上电自检：蓝灯闪 3 下（亮/灭各 300 ms） */
+        uint8 n;
+        for (n = 0; n < 3; n++) {
+            gpio_set_level(STATUS_LED_PIN, STATUS_LED_ON);
+            system_delay_ms(300);
+            gpio_set_level(STATUS_LED_PIN, STATUS_LED_OFF);
+            system_delay_ms(300);
+        }
+    }
     { //摄像头初始化：最多重试约 3 秒（150 × 20ms）。原写法无限重试，现场无法判断是摄像头故障；
       //但预算太短又会在上电瞬间误判失败，所以留足 3 秒。
         uint16 camRetry = 0;
         while (mt9v03x_init() && ++camRetry < 150) system_delay_ms(20);
         if (camRetry >= 150) {
-            /* 屏幕已舍弃：摄像头初始化失败时蓝灯常亮，程序停在这里 */
-            gpio_init(STATUS_LED_PIN, GPO, STATUS_LED_ON, GPO_PUSH_PULL);
-            while (1) system_delay_ms(100);
+            /* 摄像头初始化失败：蓝灯慢闪（500/500），程序停在这里 */
+            while (1) {
+                gpio_set_level(STATUS_LED_PIN, STATUS_LED_ON);
+                system_delay_ms(500);
+                gpio_set_level(STATUS_LED_PIN, STATUS_LED_OFF);
+                system_delay_ms(500);
+            }
         }
     }
     /* 稳定优先：纠正中断优先级倒挂。
@@ -174,30 +196,6 @@ void main(void) {
      * 注：IP/IPH 分支只置位（0->3 可用）；LCM_DMA 走 DMA_LCM_CFG 可双向设置。 */
     interrupt_set_priority(TIMER1_IRQn, 3);
     interrupt_set_priority(LCM_DMA_IRQn, 1);
-    gpio_init(IO_PB1, GPI, 0, GPI_PULL_UP);
-    gpio_init(IO_PB0, GPI, 0, GPI_PULL_UP);
-    /* 三个独立按键：按车上实测接线标定（原工程为 P02/P01/P32，本车不适用）
-     *   B2 = PB2 → TOP    （发车 / 选奇数档）
-     *   B3 = PB3 → BOTTOM （标定一圈 / 选偶数档）
-     *   B4 = PB4 → IMAGE  （急停）
-     * PB0/PB1 是拨码开关、PB6/PB7 是摄像头 SCCB，均不冲突 */
-    gpio_init(IO_PB2, GPI, 0, GPI_PULL_UP);  // TOP
-    gpio_init(IO_PB3, GPI, 0, GPI_PULL_UP);  // BOTTOM
-    gpio_init(IO_PB4, GPI, 0, GPI_PULL_UP);  // IMAGE
-    gpio_init(IO_P90, GPO, 0, GPO_PUSH_PULL); //蜂鸣器（本车未装，保留不影响）
-    gpio_init(STATUS_LED_PIN, GPO, STATUS_LED_OFF, GPO_PUSH_PULL); //蓝色状态灯
-    /* 上电自检：蓝灯慢闪 3 次（每次亮 300ms / 灭 300ms）。
-     * 「闪不闪」只说明这个引脚能不能控制灯，与高低电平极性无关；
-     * 用来区分「引脚错/灯坏了」和「极性反了」两种情况。 */
-    {
-        uint8 n;
-        for (n = 0; n < 3; n++) {
-            gpio_set_level(STATUS_LED_PIN, STATUS_LED_ON);
-            system_delay_ms(300);
-            gpio_set_level(STATUS_LED_PIN, STATUS_LED_OFF);
-            system_delay_ms(300);
-        }
-    }
     servoSelfTest(); //上电舵机自检：左右各摆约 15°，约 0.9 s（电机不参与）
 #if (TEST_OPEN_LOOP)
     { /* ===== 调试：开环固定占空比（完全不用 PID） =====
