@@ -83,38 +83,6 @@ static void applySpeedSet(uint8 idx) {
 
 void loadRoad();
 
-/* ===== 蓝灯指示（不含赛道检测） =====
- *   编码器/PID 故障  → 常亮
- *   编码器计数递增   → 快闪 5 Hz（向前推行）
- *   编码器计数倒扣   → 常亮（反向）
- *   无变化           → 熄灭 */
-static void updateStatusLed(void) {
-    static uint16 ledMs = 0;
-    static uint8 ledPhase = 0;
-    uint8 ledWant;
-
-    if (faultFlags & (FAULT_ENC_L_DOWN | FAULT_ENC_R_DOWN | FAULT_PID_SAT | FAULT_PID_REV)) {
-        ledWant = STATUS_LED_ON; // 故障：常亮
-        ledPhase = 1;
-        ledMs = 0;
-    } else if (currentSpeed >= 3) {
-        if (++ledMs >= 100) { // 前进：快闪
-            ledMs = 0;
-            ledPhase = (uint8) (!ledPhase);
-        }
-        ledWant = ledPhase ? STATUS_LED_ON : STATUS_LED_OFF;
-    } else if (currentSpeed <= -3) {
-        ledWant = STATUS_LED_ON; // 反向：常亮
-        ledPhase = 1;
-        ledMs = 0;
-    } else {
-        ledWant = STATUS_LED_OFF; // 静止：熄灭
-        ledPhase = 0;
-        ledMs = 0;
-    }
-    gpio_set_level(STATUS_LED_PIN, ledWant);
-}
-
 /* ===== 按键模块（B2/B3/B4，低电平有效，主循环 1 ms 调用一次） =====
  * 20 ms 消抖，提供「按下沿 / 松开沿」事件，B4 支持长按。
  *   B2 = 发车      B3 = 紧急停车      B4：短按 = 舵机自检，长按 ≥2 s = 标定一圈 */
@@ -253,7 +221,7 @@ void main(void) {
             encoder_clear_count(PWMA_ENCODER);
             encoder_clear_count(PWMC_ENCODER);
             currentSpeed = (int16) ((-(int32) rawR * 2 + (int32) rawL * 2) / 2);
-            updateStatusLed();
+            trackMonitor();
         }
     }
 #endif
@@ -306,7 +274,7 @@ void main(void) {
         if ((btnReleaseEdge & BTN_B4) && !btnLastWasLong) servoSelfTest();
         raceTask();
 
-        updateStatusLed(); // 蓝灯：故障常亮 / 正向快闪 / 反向常亮 / 静止熄灭
+        trackMonitor(); // 蓝灯：故障常亮 / 正向快闪 / 反向常亮 / 静止熄灭
 
         if (frameBusy) {
             noFrameTicks = 0;   // 收到完整帧，喂狗
