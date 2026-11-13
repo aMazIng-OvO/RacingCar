@@ -229,8 +229,17 @@ static void pitHandler() {
         /* 差速后的单轮目标同样限幅，保证「绝对不超过 SPEED_LIMIT」 */
         RSetSpeed = (int16) func_limit_ab((int32) RSetSpeed, 0, SPEED_LIMIT);
         LSetSpeed = (int16) func_limit_ab((int32) LSetSpeed, 0, SPEED_LIMIT);
+#if (MOTOR_OPEN_LOOP)
+        /* 开环：占空比 = 目标速度 × 系数，不使用编码器反馈。
+         * 方向固定为正转（目标速度本身恒为非负）。 */
+        gpio_set_level(motorDirR, 1);
+        gpio_set_level(motorDirL, 1);
+        pwm_set_duty(motorPwmR, (uint16) func_limit_ab((int32) RSetSpeed * MOTOR_DUTY_PER_UNIT, 0, MOTOR_DUTY_LIMIT));
+        pwm_set_duty(motorPwmL, (uint16) func_limit_ab((int32) LSetSpeed * MOTOR_DUTY_PER_UNIT, 0, MOTOR_DUTY_LIMIT));
+#else
         pwm_set_duty(motorPwmR, motorPIDCalculate(&motorRPID, RSetSpeed, encoderR));
         pwm_set_duty(motorPwmL, motorPIDCalculate(&motorLPID, LSetSpeed, encoderL));
+#endif
     }
 }
 
