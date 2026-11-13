@@ -17,6 +17,7 @@ void stopInit(void) {
     lapPulse = LAP_PULSE_DEFAULT;
     brakePulse = BRAKE_PULSE_DEFAULT;
     raceState = RACE_IDLE;
+    stop = 1;          // 上电默认停车，必须按 B2 才出力（防止上电即跑）
     lapCalibrated = 0; // 每次上电都要重新标定（脉冲/米是整车常数，但以实推为准）
 }
 

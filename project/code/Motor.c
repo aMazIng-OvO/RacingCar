@@ -241,9 +241,10 @@ static void pitHandler() {
         pwm_set_duty(motorPwmR, rampDuty);
         pwm_set_duty(motorPwmL, rampDuty);
 #else
-        /* 固定占空比：地面水平，不需要按曲率调速，速度恒定且最慢 */
-        pwm_set_duty(motorPwmR, MOTOR_RUN_DUTY);
-        pwm_set_duty(motorPwmL, MOTOR_RUN_DUTY);
+        /* 固定占空比：地面水平，不需要按曲率调速。
+         * 必须按比赛状态门控——否则上电（IDLE）时也会直接输出，车会自己跑。 */
+        pwm_set_duty(motorPwmR, (raceState == RACE_RUNNING || raceState == RACE_BRAKING) ? MOTOR_RUN_DUTY : 0);
+        pwm_set_duty(motorPwmL, (raceState == RACE_RUNNING || raceState == RACE_BRAKING) ? MOTOR_RUN_DUTY : 0);
 #endif
 #else
         pwm_set_duty(motorPwmR, motorPIDCalculate(&motorRPID, RSetSpeed, encoderR));
