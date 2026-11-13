@@ -159,12 +159,6 @@ void main(void) {
     /* ===== 最早期初始化：状态灯与按键最先就绪 =====
      * 之前按键在摄像头之后才初始化，一旦摄像头初始化失败，按键会全部失效。 */
     gpio_init(STATUS_LED_PIN, GPO, STATUS_LED_OFF, GPO_PUSH_PULL); // 蓝色状态灯
-    gpio_init(IO_PB1, GPI, 0, GPI_PULL_UP);   // 拨码 SW2
-    gpio_init(IO_PB0, GPI, 0, GPI_PULL_UP);   // 拨码 SW1
-    gpio_init(IO_PB2, GPI, 0, GPI_PULL_UP);   // B2 发车
-    gpio_init(IO_PB3, GPI, 0, GPI_PULL_UP);   // B3 急停
-    gpio_init(IO_PB4, GPI, 0, GPI_PULL_UP);   // B4 自检 / 标定
-    gpio_init(IO_P90, GPO, 0, GPO_PUSH_PULL); // 蜂鸣器（本车未装）
     { /* 上电自检：蓝灯闪 3 下（亮/灭各 300 ms） */
         uint8 n;
         for (n = 0; n < 3; n++) {
@@ -196,6 +190,15 @@ void main(void) {
      * 注：IP/IPH 分支只置位（0->3 可用）；LCM_DMA 走 DMA_LCM_CFG 可双向设置。 */
     interrupt_set_priority(TIMER1_IRQn, 3);
     interrupt_set_priority(LCM_DMA_IRQn, 1);
+    /* 按键与拨码必须在摄像头初始化之后再配置：
+     * 实测放到摄像头之前会被 mt9v03x_init() 的端口配置覆盖，导致所有按键失效。 */
+    gpio_init(IO_PB1, GPI, 0, GPI_PULL_UP);   // 拨码 SW2
+    gpio_init(IO_PB0, GPI, 0, GPI_PULL_UP);   // 拨码 SW1
+    gpio_init(IO_PB2, GPI, 0, GPI_PULL_UP);   // B2 发车
+    gpio_init(IO_PB3, GPI, 0, GPI_PULL_UP);   // B3 急停
+    gpio_init(IO_PB4, GPI, 0, GPI_PULL_UP);   // B4 自检 / 标定
+    gpio_init(IO_P90, GPO, 0, GPO_PUSH_PULL); // 蜂鸣器（本车未装）
+    gpio_init(STATUS_LED_PIN, GPO, STATUS_LED_OFF, GPO_PUSH_PULL); // 摄像头初始化可能改动端口，重新配置一次
     servoSelfTest(); //上电舵机自检：左右各摆约 15°，约 0.9 s（电机不参与）
 #if (TEST_OPEN_LOOP)
     { /* ===== 调试：开环固定占空比（完全不用 PID） =====
