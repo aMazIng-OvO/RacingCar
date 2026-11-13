@@ -166,7 +166,8 @@ int16 motorPIDCalculate(PID_t *pid, int16 target, int16 actual) {
         pidOutL = (int16) base; // 左轮
     else if (pid->which == 1)
         pidOutR = (int16) base; // 右轮
-    gpio_set_level((gpio_pin_enum) pid->which ? motorDirR : motorDirL, base >= 0);
+    gpio_set_level((gpio_pin_enum) pid->which ? motorDirR : motorDirL,
+                   (base >= 0) ? MOTOR_DIR_FORWARD : (uint8) (!MOTOR_DIR_FORWARD));
     return (int16) func_abs(base);
 }
 
@@ -212,8 +213,8 @@ static void pitHandler() {
     } else if (kickCnt) {
         /* 起跑助推：固定占空比、固定正转，绕过 PID；300 ms 后交给 PID */
         kickCnt--;
-        gpio_set_level(motorDirR, 1);
-        gpio_set_level(motorDirL, 1);
+        gpio_set_level(motorDirR, MOTOR_DIR_FORWARD);
+        gpio_set_level(motorDirL, MOTOR_DIR_FORWARD);
         pwm_set_duty(motorPwmR, MOTOR_KICK_DUTY);
         pwm_set_duty(motorPwmL, MOTOR_KICK_DUTY);
         pwm_set_duty(PWME_CH3P_PA4, steerMid + steerPIDCalculate(&steerPid, duty));
@@ -232,8 +233,8 @@ static void pitHandler() {
         LSetSpeed = (int16) func_limit_ab((int32) LSetSpeed, 0, SPEED_LIMIT);
 #if (MOTOR_OPEN_LOOP)
         /* 开环：不使用编码器反馈，方向固定正转 */
-        gpio_set_level(motorDirR, 1);
-        gpio_set_level(motorDirL, 1);
+        gpio_set_level(motorDirR, MOTOR_DIR_FORWARD);
+        gpio_set_level(motorDirL, MOTOR_DIR_FORWARD);
 #if (MOTOR_DUTY_RAMP)
         /* 爬坡诊断：从 10% 开始慢慢加，直到 60% */
         if (rampDuty < MOTOR_RAMP_MAX) rampDuty += MOTOR_RAMP_STEP;
