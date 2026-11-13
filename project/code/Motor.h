@@ -39,7 +39,7 @@
  *     并临时关闭"两侧边界全丢 / 视野 5 点全暗"的出界保护
  *     （桌面上没有赛道、摄像头看不到线时也能让车慢慢跑，用来验证电机/舵机/编码器）
  * 正式比赛前必须改回 0 */
-#define LOW_SPEED_TEST      0
+#define LOW_SPEED_TEST      1    // 台架调试：同时关闭"出界保护"（桌上看不到线也不会停车）
 #define LOW_SPEED_TEST_CAP  150
 
 /* ===== 异常状态检测（faultFlags 位标志，屏幕显示 ERR:<十进制>） =====
@@ -134,7 +134,7 @@ volatile extern int16 setSpeed, handle, encoderL, encoderR;
 /* ===== 起跑助推 =====
  * 发车后先用固定占空比推一段时间，破开静摩擦再交给 PID。
  * 目的：避免"车起不来 → PID 积分打满 → 一推就全速冲出去"。 */
-#define MOTOR_KICK_TICKS   60      // 60 × 5 ms = 300 ms 起跑助推
+#define MOTOR_KICK_TICKS   0       // 0 = 关闭起跑助推（开环固定占空比不需要它）
 #define MOTOR_KICK_DUTY    4500    // 45%：仅起步 300 ms，用来破静摩擦
 
 void motorKickStart(void);  // 由 raceStart() 调用
