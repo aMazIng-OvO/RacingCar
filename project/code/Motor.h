@@ -23,8 +23,10 @@
 #define LOW_SPEED_TEST_CAP  150
 
 /* ===== 异常状态检测（faultFlags 位标志，屏幕显示 ERR:<十进制>） =====
- * 只保留 PID 异常与紧急停车两类，全部在 5 ms 控制中断里判定；
+ * 包含 PID 异常、编码器掉线与紧急停车，全部在 5 ms 控制中断里判定；
  * 任一异常置位即视为致命故障，立即停车并置 FAULT_STOPPED。 */
+#define FAULT_ENC_L_DOWN   0x0002 // 左编码器无反馈（有速度指令但计数为 0 持续 300 ms）
+#define FAULT_ENC_R_DOWN   0x0004 // 右编码器无反馈
 #define FAULT_PID_SAT      0x0100 // PID 输出长时间打满且速度不达标（堵转 / 欠压 / 轮子卡住）
 #define FAULT_PID_REV      0x0200 // PID 输出与编码器反馈方向相反（速度环正反馈，飞车前兆）
 #define FAULT_STOPPED      0x0001 // 因异常被强制紧急停车（同时蜂鸣报警）
