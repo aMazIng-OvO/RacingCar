@@ -93,6 +93,48 @@ static void applySpeedSet(uint8 idx) {
 
 void loadRoad();
 
+/* 是否检测到赛道（由每次 loadRoad 的结果更新），上电后若一直不在赛道上，蓝灯慢闪 */
+static uint8 onTrackFlag = 0;
+
+/* ===== 蓝灯统一指示（优先级从上到下） =====
+ *   编码器/PID 故障  → 常亮
+ *   不在赛道上       → 慢闪 1 Hz（上电自检用：放回赛道后自动停闪）
+ *   编码器计数递增   → 快闪 5 Hz（向前推行）
+ *   编码器计数倒扣   → 常亮（反向）
+ *   无变化           → 熄灭 */
+static void updateStatusLed(void) {
+    static uint16 ledMs = 0;
+    static uint8 ledPhase = 0;
+    uint8 ledWant;
+
+    if (faultFlags & (FAULT_ENC_L_DOWN | FAULT_ENC_R_DOWN | FAULT_PID_SAT | FAULT_PID_REV)) {
+        ledWant = STATUS_LED_ON; // 故障：常亮
+        ledPhase = 1;
+        ledMs = 0;
+    } else if (!onTrackFlag) {
+        if (++ledMs >= 500) { // 不在赛道：慢闪
+            ledMs = 0;
+            ledPhase = (uint8) (!ledPhase);
+        }
+        ledWant = ledPhase ? STATUS_LED_ON : STATUS_LED_OFF;
+    } else if (currentSpeed >= 3) {
+        if (++ledMs >= 100) { // 前进：快闪
+            ledMs = 0;
+            ledPhase = (uint8) (!ledPhase);
+        }
+        ledWant = ledPhase ? STATUS_LED_ON : STATUS_LED_OFF;
+    } else if (currentSpeed <= -3) {
+        ledWant = STATUS_LED_ON; // 反向：常亮
+        ledPhase = 1;
+        ledMs = 0;
+    } else {
+        ledWant = STATUS_LED_OFF; // 静止：熄灭
+        ledPhase = 0;
+        ledMs = 0;
+    }
+    gpio_set_level(STATUS_LED_PIN, ledWant);
+}
+
 /* 发车/急停时统一复位：元素状态机、补线偏移、控制量与比赛相关全局量。
  * 只在 main.c 实现，由 Stop.c 的 raceStart()/stopInit() 调用。 */
 void elementReset(void) {
@@ -223,92 +265,12 @@ void main(void) {
         }
     }
 #endif
-    while (1) {
-        system_delay_ms(50);
-        switch2 = gpio_get_level(IO_PB1);
-        switch1 = gpio_get_level(IO_PB0);
-        topBtn = gpio_get_level(IO_PB2);
-        bottomBtn = gpio_get_level(IO_PB3);
-        imBtn = gpio_get_level(IO_PB4);
-        // 图像调试预览已移除（原依赖 outputImage，已删除以腾出 XRAM 给双缓冲）
-        if (!switch1 && !switch2) {
-            ips200_show_string(0, MT9V03X_H + 10, "T: SPEED 1");
-            ips200_show_string(0, MT9V03X_H + 40, "B: SPEED 2");
-            if (!topBtn) {
-                ips200_clear(RGB565_WHITE);
-                ips200_show_string(0, 130, "SELECT: 1");
-                system_delay_ms(500);
-                system_delay_ms(500);
-                applySpeedSet(0);
-                break;
-            }
-            if (!bottomBtn) {
-                ips200_clear(RGB565_WHITE);
-                ips200_show_string(0, 160, "SELECT: 2");
-                system_delay_ms(500);
-                system_delay_ms(500);
-                applySpeedSet(1);
-                break;
-            }
-        } else if (switch1 && !switch2) {
-            ips200_show_string(0, MT9V03X_H + 10, "T: SPEED 3");
-            ips200_show_string(0, MT9V03X_H + 40, "B: SPEED 4");
-            if (!topBtn) {
-                ips200_clear(RGB565_WHITE);
-                ips200_show_string(0, 130, "SELECT: 3");
-                system_delay_ms(500);
-                system_delay_ms(500);
-                applySpeedSet(2);
-                break;
-            }
-            if (!bottomBtn) {
-                ips200_clear(RGB565_WHITE);
-                ips200_show_string(0, 160, "SELECT: 4");
-                system_delay_ms(500);
-                system_delay_ms(500);
-                applySpeedSet(3);
-                break;
-            }
-        } else if (!switch1 && switch2) {
-            ips200_show_string(0, MT9V03X_H + 10, "T: SPEED 5");
-            ips200_show_string(0, MT9V03X_H + 40, "B: SPEED 6");
-            if (!topBtn) {
-                ips200_clear(RGB565_WHITE);
-                ips200_show_string(0, 130, "SELECT: 5");
-                system_delay_ms(500);
-                system_delay_ms(500);
-                applySpeedSet(4);
-                break;
-            }
-            if (!bottomBtn) {
-                ips200_clear(RGB565_WHITE);
-                ips200_show_string(0, 160, "SELECT: 6");
-                system_delay_ms(500);
-                system_delay_ms(500);
-                applySpeedSet(5);
-                break;
-            }
-        } else {
-            ips200_show_string(0, MT9V03X_H + 10, "T: SPEED 7");
-            ips200_show_string(0, MT9V03X_H + 40, "B: SPEED 8");
-            if (!topBtn) {
-                ips200_clear(RGB565_WHITE);
-                ips200_show_string(0, 130, "SELECT: 7");
-                system_delay_ms(500);
-                system_delay_ms(500);
-                applySpeedSet(6);
-                break;
-            }
-            if (!bottomBtn) {
-                ips200_clear(RGB565_WHITE);
-                ips200_show_string(0, 160, "SELECT: 8");
-                system_delay_ms(500);
-                system_delay_ms(500);
-                applySpeedSet(7);
-                break;
-            }
-        }
-    }
+    /* ===== 上电自动选档：拨码 SW1/SW2 选 4 组，取该组中较保守的一档 =====
+     * 按键已简化：B2 发车 / B3 紧急停车 / B4 舵机自检（长按 2 s = 标定一圈），
+     * 因此不再需要按键选档，上电即按拨码定档并初始化电机与编码器。 */
+    switch2 = gpio_get_level(IO_PB1);
+    switch1 = gpio_get_level(IO_PB0);
+    applySpeedSet((uint8) (((switch2 ? 2 : 0) + (switch1 ? 1 : 0)) * 2 + 1));
     RUN_MODE = FORWARD;
     stopInit();
     ips200_clear(RGB565_WHITE);
@@ -321,17 +283,28 @@ void main(void) {
         static uint8 lastRaceState = RACE_IDLE; // 用于检测 raceState 变化并刷新屏幕提示（初始 IDLE，保留发车提示）
         static uint16 lastFault = 0;       // 故障位变化时也刷一次屏（16 位，含 PID 异常位）
         static uint16 elemTicks = 0;       // 元素状态机停留帧数（超时兜底）
+        static uint16 b4Hold = 0;          // B4 按住时长（1 ms 节拍），用于区分短按/长按
         /* 按键与里程判定不依赖相机帧：摄像头停帧时仍能急停 / 收车 */
-        uint8 tBtn = gpio_get_level(IO_PB2), bBtn = gpio_get_level(IO_PB3), sBtn = gpio_get_level(IO_PB4);
-        if (topBtn && !tBtn && (raceState == RACE_IDLE || raceState == RACE_STOPPED)) {
+        uint8 b2 = gpio_get_level(IO_PB2), b3 = gpio_get_level(IO_PB3), b4 = gpio_get_level(IO_PB4);
+        /* B2：发车（完赛或急停后也可重新发车） */
+        if (topBtn && !b2 && (raceState == RACE_IDLE || raceState == RACE_STOPPED)) {
             faultReset(); // 每次发车清空上一轮故障位（停车时保留，便于赛后查看原因）
             raceStart();
         }
-        if (bottomBtn && !bBtn && raceState == RACE_IDLE) raceSetLap();
-        if (imBtn && !sBtn && (raceState == RACE_RUNNING || raceState == RACE_BRAKING)) raceStopNow();
-        topBtn = tBtn;
-        bottomBtn = bBtn;
-        imBtn = sBtn;
+        /* B3：紧急停车 */
+        if (bottomBtn && !b3 && (raceState == RACE_RUNNING || raceState == RACE_BRAKING)) raceStopNow();
+        /* B4：短按 = 舵机左右各摆 15°（自检）；长按 ≥2 s = 标定一圈 */
+        if (!b4) {
+            if (b4Hold < 2000) {
+                if (++b4Hold == 2000 && raceState == RACE_IDLE) raceSetLap(); // 长按到 2 s 触发一次
+            }
+        } else {
+            if (imBtn && b4Hold > 0 && b4Hold < 2000) servoSelfTest(); // 松开时判定为短按
+            b4Hold = 0;
+        }
+        topBtn = b2;
+        bottomBtn = b3;
+        imBtn = b4;
         raceTask();
         /* 状态或故障位变化时刷一次屏（只在切换点发生，开销可忽略）；
          * 之前发车后屏幕仍停在三行静态提示上，容易被误认为停车了 */
@@ -351,40 +324,13 @@ void main(void) {
             ips200_show_int16(64, 160, (int16) faultFlags);
         }
 
-        /* ===== 蓝灯：编码器状态指示（本车唯一的可视化反馈） =====
-         *   计数递增（向前） → 闪烁 5 Hz
-         *   计数倒扣（反向） → 常亮
-         *   没有数值变化     → 熄灭
-         *   编码器/PID 故障  → 常亮（与反向同色，都是"有问题"） */
-        {
-            static uint16 ledMs = 0;
-            static uint8 ledPhase = 0;
-            uint8 ledWant;
-            if (faultFlags & (FAULT_ENC_L_DOWN | FAULT_ENC_R_DOWN | FAULT_PID_SAT | FAULT_PID_REV)) {
-                ledWant = STATUS_LED_ON; // 故障：常亮
-                ledPhase = 1;
-                ledMs = 0;
-            } else if (currentSpeed >= 3) { // 递增：闪烁
-                if (++ledMs >= 100) {
-                    ledMs = 0;
-                    ledPhase = (uint8) (!ledPhase);
-                }
-                ledWant = ledPhase ? STATUS_LED_ON : STATUS_LED_OFF;
-            } else if (currentSpeed <= -3) { // 倒扣：常亮
-                ledWant = STATUS_LED_ON;
-                ledPhase = 1;
-                ledMs = 0;
-            } else { // 无变化：熄灭
-                ledWant = STATUS_LED_OFF;
-                ledPhase = 0;
-                ledMs = 0;
-            }
-            gpio_set_level(STATUS_LED_PIN, ledWant);
-        }
+        updateStatusLed(); // 蓝灯：故障 / 不在赛道 / 编码器方向 统一指示
 
         if (frameBusy) {
             noFrameTicks = 0;   // 收到完整帧，喂狗
             loadRoad();
+            /* 是否在赛道上：任一侧边界超过 10 点即认为在赛道（上电自检与蓝灯都用它） */
+            onTrackFlag = (uint8) (LRoadCount > 10 || RRoadCount > 10);
             if (raceState == RACE_RUNNING || raceState == RACE_BRAKING) {
                 if (ENABLE_CROSS && (RUN_MODE == CROSS ||
                                      (RUN_MODE == FORWARD && ((RCorner && RRoadCount > 2) || (LCorner && LRoadCount > 2)) &&

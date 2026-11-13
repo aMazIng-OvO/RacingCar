@@ -56,6 +56,7 @@ void raceStart(void) {
 
 void raceSetLap(void) {
     int32 snap;
+    uint8 i; // 蓝灯反馈用
     // 推车从起跑线走完一圈、再前进到需要的停车点（约 1m 处）后按 BOTTOM 键
     // 32 位里程由 PIT 读改写，必须一次性取快照后再清零
     interrupt_global_disable();
@@ -69,6 +70,21 @@ void raceSetLap(void) {
         brakePulse = lapPulse * BRAKE_DISTANCE_CM / (LAP_DISTANCE_CM + STOP_OFFSET_CM);
         if (brakePulse >= lapPulse) brakePulse = lapPulse >> 3; //参数填错时兜底，避免发车即进刹车段
         lapCalibrated = 1; // 标定成功，才允许发车
+        /* 屏幕不可用：标定成功闪 2 下（短促） */
+        for (i = 0; i < 2; i++) {
+            gpio_set_level(STATUS_LED_PIN, STATUS_LED_ON);
+            system_delay_ms(120);
+            gpio_set_level(STATUS_LED_PIN, STATUS_LED_OFF);
+            system_delay_ms(120);
+        }
+    } else {
+        /* 推的距离不到门槛：闪 4 下（慢），提示这次没标定成功 */
+        for (i = 0; i < 4; i++) {
+            gpio_set_level(STATUS_LED_PIN, STATUS_LED_ON);
+            system_delay_ms(300);
+            gpio_set_level(STATUS_LED_PIN, STATUS_LED_OFF);
+            system_delay_ms(300);
+        }
     }
 }
 
