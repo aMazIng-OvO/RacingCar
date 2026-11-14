@@ -11,6 +11,11 @@
 
 #include "zf_common_headfile.h"
 
+/* 是否要求「先标定一圈」才允许发车：
+ *   0 = 调试放行：不标定也能发车，且不会自动刹停（靠 B3 手动停车）
+ *   1 = 正式比赛：未标定按 B2 拒绝发车（蓝灯闪 3 下） */
+#define CALIB_REQUIRED  0
+
 /* ---------------- 里程参数：上车后必须实测标定 ---------------- */
 #define PULSE_PER_METER     1000    // 每米脉冲数（推车走 1 米读取 odometer）
 #define LAP_DISTANCE_CM     1200    // 赛道一圈的长度 cm
@@ -31,6 +36,7 @@ extern volatile int32 odometer;     // 发车后累计里程（脉冲）
 extern int32 lapPulse;              // 一圈总脉冲（含停车余量）
 extern int32 brakePulse;            // 提前刹车脉冲
 extern volatile uint8 raceState;
+extern volatile uint8 lapCalibrated;   // 0 = 还没按 BOTTOM 标定一圈（禁止发车）
 extern void elementReset(void);   // 发车/急停时统一复位元素与控制状态（main.c 实现）
 
 void stopInit(void);        // 初始化（选档结束后调用一次）
@@ -38,6 +44,5 @@ void raceStart(void);       // 发车：清里程、解除刹车
 void raceSetLap(void);      // 把当前里程记为一圈长度（推车标定）
 void raceStopNow(void);     // 急停
 void raceTask(void);        // 每帧调用：里程判定与制动
-void raceShow(void);        // 等待发车状态下在 IPS200 显示里程
 
 #endif //HFK_STC32G144K_STOP_H

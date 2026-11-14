@@ -29,3 +29,7 @@ project/mdk/out_file/
 .idea/
 Thumbs.db
 desktop.ini
+
+# ---------------- 数值核算脚本缓存 ----------------
+__pycache__/
+*.pyc

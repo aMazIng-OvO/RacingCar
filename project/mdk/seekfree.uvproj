@@ -820,6 +820,21 @@
               <FilePath>..\code\Image.h</FilePath>
             </File>
             <File>
+              <FileName>Track.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\code\Track.c</FilePath>
+            </File>
+            <File>
+              <FileName>BendEntry.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\code\BendEntry.c</FilePath>
+            </File>
+            <File>
+              <FileName>BendEntry.h</FileName>
+              <FileType>5</FileType>
+              <FilePath>..\code\BendEntry.h</FilePath>
+            </File>
+            <File>
               <FileName>Motor.c</FileName>
               <FileType>1</FileType>
               <FilePath>..\code\Motor.c</FilePath>

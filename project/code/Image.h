@@ -17,6 +17,11 @@
                               //桌面裸板调试时可临时改 119（不遮挡）；比赛/装车必须为 90
 #define HIDE_COL_L 48         //遮挡区左列
 #define HIDE_COL_R 140        //遮挡区右列
+/* 车身在画面里出现的最上行。该行及以下的起点搜索只用两侧窄列
+ * （左 3~HIDE_COL_L、右 HIDE_COL_R~186），绕开中央的车身暗块。
+ * 与 HIDE_ROW 分开：HIDE_ROW 还控制 getImagePointFilterSelf() 的补线遮挡，
+ * 改 HIDE_ROW 会把十字补线起点一起推远。 */
+#define BODY_ROW 80
 #define CORNER_COS100 50      //拐点判定：cos阈值×100，越小越容易出拐点
 
 void getLBorder(Point LRoad[], Point start, int16 *count);
