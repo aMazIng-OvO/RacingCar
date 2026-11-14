@@ -9,8 +9,19 @@ MERGE_WIDTH_MAX = 130
 MERGE_ROW_TOL = 15
 CENTER_LINE_DISTANCE = 18
 BEND_FAR_AHEAD = 12
-BEND_FEED_DIV = 2
-BEND_STEER_PCT = 115
+BEND_FEED_DIV = 3
+BEND_STEER_PCT = 105
+BEND_STEER_MAX = 155
+BEND_GAIN_BEND = 15
+BEND_GAIN_RATE = 5
+
+
+def steer_gain(bend):
+    """与 Motor.c 一致：强度 12 以下保持基础增益，之后每单位加 2%，封顶 130%。"""
+    pct = BEND_STEER_PCT
+    if bend > BEND_GAIN_BEND:
+        pct += (bend - BEND_GAIN_BEND) * BEND_GAIN_RATE
+    return clamp(pct, BEND_STEER_PCT, BEND_STEER_MAX)
 DEVICE_H = 18
 
 
@@ -38,7 +49,8 @@ def steer_angle_feed(line, pos, boost=True):
     dx = H - line[pos][0] + DEVICE_H
     deg = math.degrees(math.atan2(2 * DEVICE_H * dy, dx * dx + dy * dy))
     if boost:
-        deg = clamp(deg * BEND_STEER_PCT / 100, -30, 30)
+        bend = abs(dy_far - dy_aim) + abs(int(deg))
+        deg = clamp(deg * steer_gain(bend) / 100, -30, 30)
     return deg
 
 

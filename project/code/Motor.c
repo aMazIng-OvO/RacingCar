@@ -231,7 +231,10 @@ static void pitHandler() {
             raceState = RACE_STOPPED;
         }
         stop = 1;
-        steerWrite(steerMid);
+        /* 停车也回到机械中位，而不是电信号中位 steerMid。
+         * 之前这里写 steerMid，自检结束后控制中断立刻把舵机拉回未修正的位置，
+         * STEER_TRIM 只在行驶中生效，看起来就是"怎么调都差同一个角度"。 */
+        steerWrite(steerMid + STEER_TRIM);
         /* 停车分支直接给 0，不再经过 PID（开环模式下 PID 可能还留着上次的 base） */
         pwm_set_duty(motorPwmR, 0);
         pwm_set_duty(motorPwmL, 0);
@@ -297,7 +300,7 @@ static void pitHandler() {
  * 直道上两端偏差接近，前馈接近 0，不影响直线稳定性。
  * 中线重采样间距 2 像素，BEND_FAR_AHEAD = 12 相当于再看远约 24 像素。 */
 #define BEND_FAR_AHEAD   12
-#define BEND_FEED_DIV    2
+#define BEND_FEED_DIV    3
 
 /* 本帧的弯道减速比例，100 = 不减速。由 alongLine() 计算、setServoDuty() 消费一次。
  * 元素状态机也走 alongLine()，所以减速在十字与环岛阶段同样生效。
@@ -353,8 +356,16 @@ void alongLine(Point roadLine[], int16 count, int16 aimPos) {
      * 放大后的 d 同时进入 currentDuty 与曲率限速的 tan 表，
      * 转向更狠的同时基础目标速度也跟着再降一档。
      * bend 用的是放大前的角度，减速触发阈值不受增益影响。 */
-    if (bendBrake < 100)
-        d = (int8) func_limit_ab((int32) d * BEND_STEER_PCT / 100, -30, 30);
+    if (bendBrake < 100) {
+        /* 增益随弯道强度自适应。固定百分比只能照顾一种弯：加到 115% 时缓弯过冲，
+         * 降回 105% 时急弯又转不进去。这里让强度 15 以下保持基础增益，
+         * 之后每多 1 单位加 5 个百分点，强度 25 到达 155% 封顶。 */
+        int16 pct = BEND_STEER_PCT;
+        if (bend > BEND_GAIN_BEND)
+            pct += (bend - BEND_GAIN_BEND) * BEND_GAIN_RATE;
+        pct = func_limit_ab(pct, BEND_STEER_PCT, BEND_STEER_MAX);
+        d = (int8) func_limit_ab((int32) d * pct / 100, -30, 30);
+    }
 #if (DEBUG_MODE)
     if (switch1)
         ips200_draw_point(roadLine[pos].y, roadLine[pos].x + MT9V03X_H + 40, RGB565_RED);
@@ -473,7 +484,7 @@ void motorInit(int16 c11, int16 c33, int16 c44, int16 c55, int16 c77) {
     PIDInit(&motorRPID, 1,
              1000, 50, 0,
              MOTOR_DUTY_LIMIT);
-    pwm_init(PWME_CH3P_PA4, 200, steerMid);
+    pwm_init(PWME_CH3P_PA4, 200, steerMid + STEER_TRIM); // 初始化即停在机械中位
     gpio_init(motorDirR, GPO, 1, GPO_PUSH_PULL);
     gpio_init(motorDirL, GPO, 1, GPO_PUSH_PULL);
     pwm_init(motorPwmR, 17000, 0);

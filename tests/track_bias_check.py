@@ -83,7 +83,7 @@ for t in (0, 4, 8, 12):
 
 print()
 print("=== 6. 当前默认值的合计修正量 ===")
-trim, bias, mdiff = -83, 0, 0
+trim, bias, mdiff = -58, 0, 0
 print("  STEER_TRIM = %+d duty  舵机转角 %+.2f°  图像角度 %+.2f°"
       % (trim, duty_to_servo_deg(trim), duty_to_deg(trim)))
 print("  TRACK_BIAS_PX = %d 像素  等效 %.2f°  %.0f duty"
@@ -112,7 +112,7 @@ for d in (0, 10, 20, 30, 40):
 print()
 print("=== 8. 上电舵机自检的摆动范围 ===")
 STEER_MID = 2975
-TRIM = -83
+TRIM = -58
 SWING = 495
 center = STEER_MID + TRIM
 print("  中心 = steerMid + STEER_TRIM = %d + (%d) = %d duty（%.1f us）"

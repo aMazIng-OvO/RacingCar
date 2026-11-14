@@ -34,6 +34,7 @@
 * 2026-4            lscyzq         init
 ********************************************************************************************************************/
 #include "zf_common_headfile.h"
+#include "BendEntry.h"   // 弯道入口过渡区识别（独立模块，ENABLE_BEND_ENTRY 控制）
 
 /* 赛道元素开关 0=关闭 1=启用（先跑通纯循迹，再逐个打开调试） */
 #define ENABLE_CROSS 1
@@ -244,6 +245,7 @@ void main(void) {
     gpio_init(IO_P90, GPO, 0, GPO_PUSH_PULL); // 蜂鸣器（本车未装）
     gpio_init(STATUS_LED_PIN, GPO, STATUS_LED_OFF, GPO_PUSH_PULL); // 摄像头初始化可能改动端口，重新配置一次
     servoSelfTest(); //上电舵机自检：左右各摆约 30°，约 1.4 s，结束回机械 90°（电机不参与）
+    bendEntryInit(); // 弯道入口状态机复位
 #if (TEST_OPEN_LOOP)
     { /* ===== 调试：开环固定占空比（完全不用 PID） =====
        * 上电即让两轮以 TEST_OPEN_DUTY 慢速正转，只跑蓝灯指示：
@@ -345,13 +347,30 @@ void main(void) {
              * 结论交给控制中断做 15 ms 消抖，控制中断不再直接访问整帧图像。
              * 判据与参考实现一致：两侧边界全丢，或 5 个采样点全暗。 */
             trackEvaluate();        // 用同一份边界点数更新赛道状态，供发车许可与蓝灯使用
+#if (ENABLE_BEND_ENTRY)
+            /* 入弯过渡区识别：在直道与弯道的连接处，画面里没有边界是正常现象。
+             * 模块自己维护状态机，只向这里提供出界宽容等级。 */
+            bendEntryUpdate(centerLine, centerLineCount, getAimPos());
+#endif
             {
                 uint8 dark = darkPoints();
-                /* 5 点全暗：画面里确实没有赛道，直接出界。
-                 * 两侧边界全丢时要求至少 3 点暗：弯道里边界跑出搜索范围很常见，
-                 * 只要画面还有亮区就说明车没冲出去，不能停。 */
-                outOfTrack = (uint8) ((dark >= 5) ||
-                                      ((!LRoadCount && !RRoadCount) && dark >= 3));
+                uint8 guard = 0;
+#if (ENABLE_BEND_ENTRY)
+                guard = bendEntryGuard();
+#endif
+                if (guard >= 2) {
+                    /* 连接处时间窗内：完全免判，画面里的黑区是弯道外侧的底布 */
+                    outOfTrack = 0;
+                } else if (guard == 1) {
+                    /* 已确认入弯：单侧丢边属于常态，只有 5 点全暗才算冲出 */
+                    outOfTrack = (uint8) (dark >= 5);
+                } else {
+                    /* 5 点全暗：画面里确实没有赛道，直接出界。
+                     * 两侧边界全丢时要求至少 3 点暗：弯道里边界跑出搜索范围很常见，
+                     * 只要画面还有亮区就说明车没冲出去，不能停。 */
+                    outOfTrack = (uint8) ((dark >= 5) ||
+                                          ((!LRoadCount && !RRoadCount) && dark >= 3));
+                }
                 /* 发车后的宽限期：起步瞬间视觉还没稳定，先不判出界 */
                 if ((uint16) (msTick - runStartMs) < 800) outOfTrack = 0;
             }
@@ -373,8 +392,15 @@ void main(void) {
                     RUN_MODE = L_ROUND;
                     borderIn = 1;
                     runLRound(LCorner, RCorner);
-                } else
-                    alongLine(centerLine, centerLineCount, getAimPos());
+                } else {
+                    int8 beTurn = 0;
+                    /* 连接处中线点数不足时用入弯前冻结的转角维持转向，
+                     * 视觉一丢失就把方向打直，车会切进内侧或冲出去 */
+                    if (ENABLE_BEND_ENTRY && bendEntryTurn(&beTurn))
+                        setServoDuty(beTurn);
+                    else
+                        alongLine(centerLine, centerLineCount, getAimPos());
+                }
 
                 /* 元素超时兜底：卡在十字/环岛超过 8 s 就强制回 FORWARD，
                  * 否则会一直用固定 aim 打角、全速冲出赛道。
