@@ -26,11 +26,45 @@
 
 /* 入弯减速：borderIn = 1（车头已进弯）时把目标速度压到该百分比。
  * 用比例而不是绝对赋值，目标速度不会因此被抬高。 */
-#define BORDER_IN_SPEED_RATIO   70
+#define BORDER_IN_SPEED_RATIO   50
 
-/* 上电舵机自检摆幅：左右各 15°。
- * 200 Hz 下 1 duty = 0.5 µs；常见舵机 0.5 ms ≈ 60°，故 15° ≈ 250 duty。 */
-#define SERVO_TEST_SWING   250
+/* ===== 轨迹偏置的标定项 =====
+ * 三个偏置互相独立，默认 0 表示不引入额外修正。车持续压一侧边线时按顺序排查：
+ *   1. STEER_TRIM：舵机机械中值装偏。正值让舵机输出右偏，负值左偏，
+ *      单位是 duty（1 duty = 0.5 µs）。按 395 duty ≈ 24° 估算，1° ≈ 16.5 duty。
+ *      实测中位右偏 2°，补 -33 后仍差 3°，累加到 -83（约 5°）拉回机械 90°。
+ *   2. TRACK_BIAS_PX：摄像头装偏或支架倾斜。画面中心列 94 对应的不是车头正前方，
+ *      纯跟踪拿到的横向偏差带一个恒定分量。正值把瞄准点右移，单位是像素。
+ *   3. MOTOR_DIFF_TRIM：左右轮实际速度不对称（电机个体差、轮胎直径差）。
+ *      正值让左轮比右轮快，把车往右拉。单位与 setSpeed 一致（脉冲 / 5 ms）。
+ * 三者都只影响行驶过程，停车回中用的是 steerMid，不叠加 STEER_TRIM。 */
+#define STEER_TRIM       (-83)  // 舵机中值修正（duty）：机械右偏约 5°，反向拉到中位
+#define TRACK_BIAS_PX      0    // 纯跟踪瞄准点的横向偏置（像素，正值向右）
+#define MOTOR_DIFF_TRIM    0    // 左右轮目标速度差补偿（正值左轮快）
+
+/* ===== 弯道转向增强 =====
+ * 只在弯道减速状态生效：把纯跟踪算出的图像角度按该百分比放大后再送给舵机与曲率限速。
+ * 直道保持原增益，避免整体调高 c1 带来的直道摆振。
+ * 放大后的角度同时进入 tani 查表，曲率限速会跟着再降一档。 */
+#define BEND_STEER_PCT      115
+
+/* ===== 弯道提前减速 =====
+ * 触发信号是中线的远端趋势变化量加当前转角，车还没到弯心就能看到弯。
+ * bendLevel 超过 BEND_SLOW_START 后，每多 1 单位把目标速度降低
+ * BEND_SLOW_GAIN 个百分点，最低降到 BEND_SLOW_MIN。
+ * 处于减速状态时再用 BEND_SPEED_CAP 做一次硬限幅，保证入弯初期就慢下来。
+ * BORDER_IN_SPEED_RATIO 与这个比例取更严格的一个，两者不会连乘。 */
+#define BEND_SLOW_START     4
+#define BEND_SLOW_GAIN      3
+#define BEND_SLOW_MIN       40
+#define BEND_SPEED_CAP      200   // 单位与 setSpeed 一致（脉冲 / 5 ms）
+#define BEND_RELEASE        2     // 弯道强度回落到该值以下才解除减速，出弯前不中途加速
+
+/* 上电舵机自检摆幅：左右各 30°。
+ * 200 Hz 下 1 duty = 0.5 µs；按 395 duty ≈ 24° 的行程估算，1° ≈ 16.5 duty，
+ * 30° ≈ 495 duty。自检以 steerMid + STEER_TRIM 为中心，结束时回到该位置，
+ * 即机械 90°。若机械限位不足 30°，摆到两端会堵转，听到持续响声就调小。 */
+#define SERVO_TEST_SWING   495
 
 /* ===== 低速试车模式 =====
  * 0 = 正常比赛
@@ -148,7 +182,7 @@ extern volatile uint8 outOfTrack;
 
 void motorKickStart(void);  // 由 raceStart() 调用
 void motorForceStop(void);  // 强制停车（B3 急停调用，直接清零占空比）
-void servoSelfTest(void);   // 上电舵机自检：左右各摆 SERVO_TEST_SWING（≈15°）
+void servoSelfTest(void);   // 上电舵机自检：左右各摆 SERVO_TEST_SWING（≈30°），结束回机械 90°
 void motorInit(int16 c11, int16 c33, int16 c44, int16 c55, int16 c77);
 void setServoDuty(int8 duty);
 void alongLine(Point roadLine[], int16 count, int16 aimPos);

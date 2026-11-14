@@ -183,6 +183,20 @@ static void debugReport(uint8 running) {
            RUN_MODE, ALONG, trackIsOn(), faultFlags, currentSpeed, setSpeed, currentDuty);
 }
 
+/* 出界采样的 5 个点：车头前方与两侧。返回低于阈值的个数。
+ * 原来把「两侧边界全丢」单独作为出界条件，弯道里边界跑出窄列搜索范围、
+ * 两侧起点同时失败时会被当成冲出赛道，发车十几毫秒后就停车。 */
+static uint8 darkPoints(void) {
+    uint8 n = 0;
+
+    if (mt9v03x_frame[84][95] < threshold) n++;
+    if (mt9v03x_frame[88][47] < threshold) n++;
+    if (mt9v03x_frame[87][141] < threshold) n++;
+    if (mt9v03x_frame[75][120] < threshold) n++;
+    if (mt9v03x_frame[74][64] < threshold) n++;
+    return n;
+}
+
 void main(void) {
     clock_init(SYSTEM_CLOCK_96M);
     debug_init();
@@ -229,7 +243,7 @@ void main(void) {
     gpio_init(IO_PB4, GPI, 0, GPI_PULL_UP);   // B4 自检 / 标定
     gpio_init(IO_P90, GPO, 0, GPO_PUSH_PULL); // 蜂鸣器（本车未装）
     gpio_init(STATUS_LED_PIN, GPO, STATUS_LED_OFF, GPO_PUSH_PULL); // 摄像头初始化可能改动端口，重新配置一次
-    servoSelfTest(); //上电舵机自检：左右各摆约 15°，约 0.9 s（电机不参与）
+    servoSelfTest(); //上电舵机自检：左右各摆约 30°，约 1.4 s，结束回机械 90°（电机不参与）
 #if (TEST_OPEN_LOOP)
     { /* ===== 调试：开环固定占空比（完全不用 PID） =====
        * 上电即让两轮以 TEST_OPEN_DUTY 慢速正转，只跑蓝灯指示：
@@ -283,6 +297,13 @@ void main(void) {
     while (1) {
         static uint16 lastFrameMs = 0;   // 最近一次收到完整帧的时刻
         static uint16 elemEnterMs = 0;   // 进入元素的时刻
+        static uint16 runStartMs = 0;    // 最近一次进入 RACE_RUNNING 的时刻
+        static uint8 lastRaceState = 0;  // 上一次的比赛状态，用于捕捉状态切换
+        /* 记下发车时刻：出界判定在发车后 800 ms 内不生效 */
+        if (raceState != lastRaceState) {
+            if (raceState == RACE_RUNNING) runStartMs = msTick;
+            lastRaceState = (uint8) raceState;
+        }
         /* 按键与里程判定不依赖相机帧：摄像头停帧时仍能急停 / 收车 */
         btnScan();
         /* 按键确认反馈：任意一个键按下（边沿）→ 蓝灯亮 60 ms。
@@ -324,10 +345,16 @@ void main(void) {
              * 结论交给控制中断做 15 ms 消抖，控制中断不再直接访问整帧图像。
              * 判据与参考实现一致：两侧边界全丢，或 5 个采样点全暗。 */
             trackEvaluate();        // 用同一份边界点数更新赛道状态，供发车许可与蓝灯使用
-            outOfTrack = (uint8) ((!LRoadCount && !RRoadCount) ||
-                                  (mt9v03x_frame[84][95] < threshold && mt9v03x_frame[88][47] < threshold &&
-                                   mt9v03x_frame[87][141] < threshold && mt9v03x_frame[75][120] < threshold &&
-                                   mt9v03x_frame[74][64] < threshold));
+            {
+                uint8 dark = darkPoints();
+                /* 5 点全暗：画面里确实没有赛道，直接出界。
+                 * 两侧边界全丢时要求至少 3 点暗：弯道里边界跑出搜索范围很常见，
+                 * 只要画面还有亮区就说明车没冲出去，不能停。 */
+                outOfTrack = (uint8) ((dark >= 5) ||
+                                      ((!LRoadCount && !RRoadCount) && dark >= 3));
+                /* 发车后的宽限期：起步瞬间视觉还没稳定，先不判出界 */
+                if ((uint16) (msTick - runStartMs) < 800) outOfTrack = 0;
+            }
             if (raceState == RACE_RUNNING || raceState == RACE_BRAKING) {
                 if (ENABLE_CROSS && (RUN_MODE == CROSS ||
                                      (RUN_MODE == FORWARD && ((RCorner && RRoadCount > 2) || (LCorner && LRoadCount > 2)) &&
@@ -373,8 +400,78 @@ void main(void) {
     }
 }
 
+/* ===== 弯道识别与中线融合 =====
+ * 拐点序号要交给元素状态机，参考实现直接把 LRoadCount / RRoadCount 裁到拐点处，
+ * 弯道里拐点往往落在第 5~10 个点，中线只剩这几个点，前瞻点被夹到车头附近，
+ * 纯跟踪拿不到远处的弯曲趋势，表现就是"看到弯了也来不及转"。
+ * 这里保留一份未裁短的点列专门生成中线，全局点数仍按参考实现裁短供元素判据使用。 */
+#define MERGE_WIDTH_MIN   12    // 双侧配对的最小赛道宽度（像素）
+#define MERGE_WIDTH_MAX   130   // 双侧配对的最大赛道宽度
+#define MERGE_ROW_TOL     15    // 左右边界配对允许的行号差
+
+static Point midL[expRoadCount], midR[expRoadCount];
+
+/* 以点数较多的一侧为骨架生成中线。两侧同一行都有点时取列号中点，
+ * 只有一侧时按 centerLineDistance 外推。输出点数等于骨架点数，
+ * 弯道外侧边界被 turn>=4 打断时中线长度不会跟着骤降。 */
+static void buildCenterLine(Point ml[], int16 mlc, Point mr[], int16 mrc) {
+    Point *skel, *other;
+    int16 sc, oc, i, j = 0, k = 0, t, best, bestD, d, width, yl, yr, dy, halfW;
+    static int16 lastHalfW = 0;   // 跨帧记忆的实测半宽，只有单侧可见时继续用它外推
+    uint8 leftIsSkel = (uint8) (mlc >= mrc);
+
+    if (mlc <= 0 && mrc <= 0) {
+        centerLineCount = 0;
+        return;
+    }
+    if (leftIsSkel) {
+        skel = ml; sc = mlc; other = mr; oc = mrc;
+    } else {
+        skel = mr; sc = mrc; other = ml; oc = mlc;
+    }
+    halfW = lastHalfW ? lastHalfW : (int16) centerLineDistance;
+    for (i = 0; i < sc && k < expRoadCount; i++) {
+        best = -1;
+        bestD = 0x7FFF;
+        /* 两条边界都按近→远排列（行号递减），游标只向前推进 */
+        while (j + 1 < oc && other[j].x > skel[i].x) j++;
+        /* 游标附近取行号最接近的点，容忍重采样带来的 1~2 像素错位 */
+        for (t = j - 2; t <= j + 2; t++) {
+            if (t < 0 || t >= oc) continue;
+            d = func_abs((int16) other[t].x - (int16) skel[i].x);
+            if (d < bestD) {
+                bestD = d;
+                best = t;
+            }
+        }
+        centerLine[k].x = skel[i].x;
+        if (best >= 0 && oc > 0 && bestD <= MERGE_ROW_TOL) {
+            yl = leftIsSkel ? (int16) skel[i].y : (int16) other[best].y;
+            yr = leftIsSkel ? (int16) other[best].y : (int16) skel[i].y;
+            width = yr - yl;
+            if (width >= MERGE_WIDTH_MIN && width <= MERGE_WIDTH_MAX) {
+                /* 记下本帧实测半宽，后面只有单侧时用它外推。
+                 * 固定用 centerLineDistance(18) 时，赛道实际半宽 30 会让断裂段的
+                 * 中线偏向骨架侧十几个像素，弯道里表现为转向偏晚。 */
+                halfW = (int16) func_limit_ab((width + 1) >> 1, 8, 60);
+                /* 1/4 权重平滑，避免单帧噪声把半宽带偏 */
+                lastHalfW = lastHalfW ?
+                            (int16) (((int32) lastHalfW * 3 + halfW + 2) >> 2) : halfW;
+                centerLine[k].y = (uint8) ((yl + yr) >> 1);
+                k++;
+                continue;
+            }
+        }
+        /* 单侧有效：按本帧实测半宽外推，缺侧不会让整条中线消失 */
+        dy = (int16) skel[i].y + (leftIsSkel ? halfW : -halfW);
+        centerLine[k].y = (uint8) func_limit_ab(dy, 0, MT9V03X_W - 1);
+        k++;
+    }
+    centerLineCount = k;
+}
+
 void loadRoad() {
-    int16 idx;
+    int16 idx, midLc, midRc;
     uint8 leftFound = 0, rightFound = 0;
     Point LStart = getLStart(), RStart = getRStart();
     if (RUN_MODE == FORWARD) centerLineDistance = 18; //普通循迹恢复默认补线偏移
@@ -387,12 +484,41 @@ void loadRoad() {
     memcpy(RBorder, RRoad, RBorderCount * sizeof(Point));
     getGodRoadLine(LRoad, LRoadCount);
     getGodRoadLine(RRoad, RRoadCount);
+    /* 用两侧边界的实测宽度修正单侧外推的假设半宽。
+     * 参考实现把 centerLineDistance 固定成 18 像素，实际赛道更宽时，
+     * 只有一侧可见的那几行会按 18 外推，中线整体偏向可见侧，
+     * 纯跟踪随之给出一个持续的同向转角，表现就是轨迹贴着一侧边线跑。
+     * 两侧都有效、行号能对上的点取宽度平均，作为本帧的半宽。 */
+    if (RUN_MODE == FORWARD && LRoadCount > 10 && RRoadCount > 10) {
+        int16 i2, j2 = 0, n2 = 0, w, hw;
+        int32 sumW = 0;
+        for (i2 = 0; i2 < LRoadCount && n2 < 24; i2 += 2) {
+            if (j2 + 1 < RRoadCount) {
+                while (j2 + 1 < RRoadCount && RRoad[j2].x > LRoad[i2].x) j2++;
+            }
+            if (func_abs((int16) RRoad[j2].x - (int16) LRoad[i2].x) > 3) continue;
+            w = (int16) RRoad[j2].y - (int16) LRoad[i2].y;
+            if (w < MERGE_WIDTH_MIN || w > MERGE_WIDTH_MAX) continue;
+            sumW += w;
+            n2++;
+        }
+        if (n2 >= 5) {
+            hw = (int16) (sumW / n2 / 2);
+            centerLineDistance = (uint8) func_limit_ab(hw, 8, 60);
+        }
+    }
     filterRoad(LRoad, LRoadCount);
     filterRoad(RRoad, RRoadCount);
     resampleRoad(LRoad, &LRoadCount, 0, 3);
     resampleRoad(RRoad, &RRoadCount, 0, 3);
     LCorner = findCorner(LRoad, LRoadCount, 0);
     RCorner = findCorner(RRoad, RRoadCount, 0);
+    /* 下面的拐点分支会把全局点数裁到拐点处供元素判据使用。
+     * 中线必须用裁短之前的完整点列，否则弯道里前瞻点被夹到车头附近。 */
+    midLc = LRoadCount;
+    midRc = RRoadCount;
+    if (midLc > 0) memcpy(midL, LRoad, midLc * sizeof(Point));
+    if (midRc > 0) memcpy(midR, RRoad, midRc * sizeof(Point));
     /* borderIn：左右各自独立判定，标志绝不跨分支复用；索引前先确认 count>0。
      * 只在普通循迹（FORWARD）时重算——环岛/十字阶段由元素函数维持 borderIn=1，
      * 若每帧都在这里覆盖，setServoDuty 的入弯减速就永远拿不到 1。 */
@@ -425,13 +551,10 @@ void loadRoad() {
         }
         RRoadCount = RCorner;
     }
-    if (ALONG == ALONG_L) {
-        getCenterLineByLBorder(LRoad, centerLine, LRoadCount);
-        centerLineCount = LRoadCount;
-    } else {
-        getCenterLineByRBorder(RRoad, centerLine, RRoadCount);
-        centerLineCount = RRoadCount;
-    }
+    /* 中线由完整的左右边界融合得到，不再只靠 ALONG 选中的单侧平移。
+     * 单侧平移假设赛道半宽恒为 centerLineDistance，弯道里整条中线会偏向一侧；
+     * 双侧取中点让宽度误差自动对消，只有一侧有效时才退回外推。 */
+    buildCenterLine(midL, midLc, midR, midRc);
     if (centerLineCount >= 2) {
         int16 startPos = 0;
         for (idx = 1; idx < centerLineCount; idx++)
@@ -443,7 +566,10 @@ void loadRoad() {
     } else {
         centerLineCount = 0;   // 边界全丢时不写脏点，控制量沿用到下一帧判定
     }
-    ALONG = LRoadCount > RRoadCount ? ALONG_L : ALONG_R;
+    /* 普通循迹由两侧点数投票决定单侧外推的备选边；元素阶段由状态机维持 ALONG，
+     * 每帧无条件重算会把环岛五个阶段设置的值覆盖掉。 */
+    if (RUN_MODE == FORWARD)
+        ALONG = LRoadCount > RRoadCount ? ALONG_L : ALONG_R;
 }
 
 /*　　┏┓　　┏┓

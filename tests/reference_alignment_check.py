@@ -112,7 +112,7 @@ if not h_ok:
     ok = False
 
 print()
-print("=== 3. loadRoad() 函数体（main.c，图像链路的调用序列）===")
+print("=== 3. loadRoad() 与参考的关系 ===")
 ref_main = open(os.path.join(REF, "user", "main.c"), encoding="utf-8", errors="replace").read()
 cur_main = open(os.path.join(CUR, "user", "main.c"), encoding="utf-8", errors="replace").read()
 fr = extract_function(ref_main, "void loadRoad() {")
@@ -121,7 +121,37 @@ if fr is None or fc is None:
     print("  未能提取 loadRoad")
     ok = False
 else:
-    ok = report_equal("loadRoad", fr, fc) and ok
+    # 比较终点取到半宽自适应之前：该段是有意加入的，单列为允许项
+    ref_end = "filterRoad(LRoad, LRoadCount);"
+    cur_end = "if (RUN_MODE == FORWARD && LRoadCount > 10 && RRoadCount > 10) {"
+    start = "if (RUN_MODE == FORWARD) centerLineDistance = 18;"
+    a, b = fr.find(ref_end), fc.find(cur_end)
+    a0, b0 = fr.find(start), fc.find(start)
+    if min(a, b, a0, b0) < 0:
+        print("  未能定位感知调用序列")
+        ok = False
+    else:
+        # 局部变量声明是新增融合函数的需要，比较从第一条感知语句开始
+        ok = report_equal("感知前半段（爬线到拐点之前）", fr[a0:a], fc[b0:b]) and ok
+        la, lb = norm_lines(fr[a:]), norm_lines(fc[b:])
+        print("  后半段归一化行数 参考=%d 当前=%d（中线生成按弯道识别需求改进）"
+              % (len(la), len(lb)))
+    cur_calls = strip_comments(cur_main)
+    cur_motor = strip_comments(open(os.path.join(CUR, "code", "Motor.c"),
+                                    encoding="utf-8", errors="replace").read())
+    has_merge = "buildCenterLine(midL, midLc, midR, midRc);" in cur_calls
+    has_snapshot = "memcpy(midL, LRoad" in cur_calls
+    keeps_element = "LRoadCount = LCorner;" in cur_calls
+    has_halfw = "centerLineDistance = (uint8) func_limit_ab(hw, 8, 60);" in cur_calls
+    # 偏置项用在纯跟踪里，位于 Motor.c 的 alongLine()
+    has_bias = ("TRACK_BIAS_PX" in cur_motor) and ("STEER_TRIM" in cur_motor)
+    print("  中线改用完整点列融合:", "是" if has_merge else "否")
+    print("  拐点前保存未裁短的边界副本:", "是" if has_snapshot else "否")
+    print("  元素判据仍用截断后的全局点数:", "是" if keeps_element else "否")
+    print("  单侧外推的半宽改用实测宽度:", "是" if has_halfw else "否")
+    print("  纯跟踪带横向偏置标定项:", "是" if has_bias else "否")
+    if not (has_merge and has_snapshot and keeps_element and has_halfw and has_bias):
+        ok = False
 
 print()
 print("=== 4. 关键参数（Image.h 宏定义）===")
