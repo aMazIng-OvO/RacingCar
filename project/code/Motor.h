@@ -6,7 +6,6 @@
 #define SEEKFREE_STC32G144K_100PIN_OPENSOURCE_LIBRARY_MOTOR_H
 #include "zf_common_headfile.h"
 #include "Image.h"      // 纵向参考行取自视野窗口（VIEW_NEAR_ROW）
-#define DEBUG_MODE 0
 
 /* 目标速度上限，单位是「脉冲 / 5 ms」。
  * 8 档 c5 与弯道限速 sqrt(R·c4) 的结果都由它封顶，是唯一的速度天花板。
@@ -14,6 +13,13 @@
  * 例：PULSE_PER_METER 实测 34600 时，400 → 2.31 m/s。
  * 需要提速只改这一个宏。 */
 #define SPEED_LIMIT        400
+
+/* ===== 起步速度斜坡 =====
+ * 发车后前 SPEED_RAMP_MS 内，实际目标速度每个 5 ms 控制拍最多上升
+ * SPEED_RAMP_STEP，避免从 0 直接跳到 c5（日志里 300 ms 就到 362）。
+ * 只限制“上升”；目标速度下降（入弯、刹车、急停）仍然立即生效。 */
+#define SPEED_RAMP_MS      1200   // 斜坡窗口，覆盖发车到第一个弯
+#define SPEED_RAMP_STEP      2    // 每 5 ms 允许增加的脉冲/5ms 目标；2 约 1 s 到 400
 
 /* ===== 舵机（200 Hz，steerMid = 2975，1 duty = 0.5 µs） =====
  * 单边 395 duty = 197.5 µs 脉宽偏移，实际转角取决于舵机自身的行程标定
@@ -27,7 +33,7 @@
 
 /* 入弯减速：borderIn = 1（车头已进弯）时把目标速度压到该百分比。
  * 用比例而不是绝对赋值，目标速度不会因此被抬高。 */
-#define BORDER_IN_SPEED_RATIO   50
+#define BORDER_IN_SPEED_RATIO   40
 
 /* ===== 轨迹偏置的标定项 =====
  * 三个偏置互相独立，默认 0 表示不引入额外修正。车持续压一侧边线时按顺序排查：
@@ -126,7 +132,7 @@
 #define BEND_SLOW_START     4
 #define BEND_SLOW_GAIN      3
 #define BEND_SLOW_MIN       40
-#define BEND_SPEED_CAP      200   // 单位与 setSpeed 一致（脉冲 / 5 ms）
+#define BEND_SPEED_CAP      170   // 弯道减速的硬顶；原 200 仍偏快，先降到 170
 #define BEND_RELEASE        2     // 弯道强度回落到该值以下才解除减速，出弯前不中途加速
 
 /* 上电舵机自检摆幅：左右各 30°。
@@ -178,13 +184,7 @@ void faultReset(void);
 #define STATUS_LED_ON       0
 #define STATUS_LED_OFF      1
 
-/* 屏幕（IPS200）已从硬件上移除，工程内不再有任何 ips200_* 调用。
- * 若以后加回屏幕，直接调用库函数即可（头文件仍在 zf_common_headfile.h 里）。 */
-
 #define FORWARD 114
-#define CROSS 514
-#define R_ROUND 1919
-#define L_ROUND 810
 #define ALONG_L 88
 #define ALONG_R 99
 
@@ -237,7 +237,6 @@ extern volatile uint8 outOfTrack;
  *   0 = 正常闭环 PID
  * 用途：排除"反馈符号/增益不匹配"这一类问题，先确认「给多少占空比就跑多快」。 */
 #define MOTOR_OPEN_LOOP        0
-#define MOTOR_DUTY_PER_UNIT    8    // 每 1 单位 setSpeed 对应的占空比（400 × 8 = 3200，即 32%）
 
 /* ===== 占空比爬坡诊断（临时） =====
  * 设 1 时：发车后占空比从 MOTOR_RAMP_START 开始，每 5 ms 加 MOTOR_RAMP_STEP，

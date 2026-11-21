@@ -96,21 +96,23 @@ static int16 borderInTriggerDistance = 25;
 static uint8 elemActive = ELEM_NONE;
 /* 串口可观测量（只写不参与控制） */
 static uint8 elemStageDbg = 0;   // 元素内部阶段
-static uint8 elemCandDbg = 0;    // 环岛入口候选位：bit0 右、bit1 左
+static uint8 elemCandDbg = 0;    // 环岛入口候选位：bit0~3 右、bit4~7 左
 static uint8 roundScoreDbg = 0;  // 环岛入口积分进度（到 3 触发）
 
 /* ===== 黑匣子：跑车时记录元素状态，停车后按 B4 上传 =====
  * 现场限制：跑车时数据线不够长，只能停车后读串口。所以把关键状态按 20 Hz
  * 记进 RAM（512 条 × 50 ms ≈ 25 s，够跑一整圈），停车后按 B4 一次性上传。
  * 每条的格式（逗号分隔，前缀 LOG）：
- *   LOG  t,MODE,STG,CAND,RS,L,R,C,DUTY
- * 全部记录发完后以 ENDDDDD 结尾，看连续的 t 就能还原"进环岛那几秒到底发生了什么"。 */
+ *   LOG  t,MODE,STG,CAND,RS,L,R,C,DUTY,SPD,DS,DARK,H
+ * 全部记录发完后以 ENDDDDD 结尾，看连续的 t 就能还原"进环岛那几秒到底发生了什么"。
+ * 整行必须压到 64 字节以内：USB CDC 端点包只有 64 字节，超长会被拆成两包，
+ * 调试助手按包显示时前半行（含 CAND/RS）就被截掉，现场日志因此看不到候选位。 */
 #define ELEM_LOG_N   512
 /* usb.h 里 DEVSTATE_CONFIGURED = 4，只有到这一步 USB 才真的能发数据 */
 #define USB_STATE_CONFIGURED   4
 typedef struct {
     uint16 t;      // 相对发车时刻的毫秒（<65 s 不会回绕）
-    uint8  mode;   // RUN_MODE
+    uint16 mode;   // RUN_MODE：810/1919 不能截成 uint8，否则日志显示 42/127
     uint8  stg;    // 元素内部阶段
     uint8  cand;   // 环岛候选位
     uint8  rs;     // 环岛积分
@@ -118,6 +120,11 @@ typedef struct {
     uint8  r;      // RRawCount
     uint8  c;      // centerLineCount
     int8   duty;   // 舵机偏移 / 4（压缩到 ±99，乘以 4 还原）
+    uint16 err;    // faultFlags：0x0400 出界、0x0100 PID 饱和、0x0002/4 编码器掉线
+    int16  spd;    // currentSpeed（脉冲 / 5 ms）
+    int16  ds;     // setSpeed（目标速度）
+    uint8  dark;   // 出界采样点暗点数 0~5
+    uint8  huan;   // 1 = 当前处于环岛状态机（MODE=810/1919）
 } elemLog_t;
 
 static elemLog_t elemLog[ELEM_LOG_N];
@@ -237,7 +244,6 @@ void elementReset(void) {
     ALONG = ALONG_R;
     borderIn = 0;
     centerLineDistance = 18;
-    banUpdateThreshold = 0;
     centerLineCount = 0;
     LCorner = RCorner = 0;
     LRoadCount = RRoadCount = expRoadCount;
@@ -264,7 +270,7 @@ static uint8 darkCount = 0;
 
 /* ===== USB CDC 调试输出 =====
  * 默认只在按下 B4 后上传黑匣子；平时不发送周期性数据，避免跑车时占用 USB/主循环。
- * 黑匣子格式：LOG t,MODE,STG,CAND,RS,L,R,C,DUTY；全部发完后固定输出 ENDDDDD。
+ * 黑匣子格式：LOG t,MODE,STG,CAND,RS,L,R,C,DUTY,SPD,DS,DARK,H；全部发完后固定输出 ENDDDDD。
  * 需要恢复原来的 ODO 周期调试行时，把 ENABLE_LIVE_TELEMETRY 改为 1。 */
 #define ENABLE_LIVE_TELEMETRY   0
 
@@ -278,34 +284,43 @@ static void debugReport(uint8 running) {
         logDump = 1;
         logDumpIdx = 0;
         logDumpReq = 0;
-        lastMs = (uint16) (now - 40);   // 下一拍立即发第一条
+        lastMs = (uint16) (now - 50);   // 下一拍立即发第一条
     }
 
 #if (ENABLE_LIVE_TELEMETRY)
     if (!logDump && (uint16) (now - lastMs) < (uint16) (running ? 1000 : 250)) return;
 #else
     if (!logDump) return;
-    if ((uint16) (now - lastMs) < 40) return;
+    /* 上传节奏与记录节奏同为 50 ms：既不会比记录快而空转，
+     * 也给 USB 主机侧留出取包时间，避免缓冲堆积后按包截断。 */
+    if ((uint16) (now - lastMs) < 50) return;
 #endif
     lastMs = now;
 
     /* ===== 黑匣子回放 =====
      * 跑车时数据线接不上（不够长），所以把这一轮的元素状态存在 RAM 里，
      * 停车后按 B4 再上传。格式：
-     *   LOG  t,MODE,STG,CAND,RS,L,R,C,DUTY
-     * t 是相对发车时刻的毫秒，看相邻几条就能还原"进环岛那几秒"发生了什么。 */
+     *   LOG  t,MODE,STG,CAND,RS,L,R,C,DUTY,SPD,DS,DARK,H
+     * t 是相对发车时刻的毫秒，看相邻几条就能还原"进环岛那几秒"发生了什么。
+     * SPD/DS 是实际/目标速度，DARK 是出界采样点暗点数，
+     * H=1 表示当前处于环岛状态机（MODE=810/1919）。
+     * 去掉 ERR、把 Huan 缩成 H，整行压到 64 字节以内：原来 14 字段约 65 字节，
+     * 超过 USB CDC 的 64 字节端点包会被拆包，调试助手只显示后半行，
+     * 前半行的 MODE/STG/CAND/RS 全部丢失。faultFlags 仍存在结构体里。 */
     if (logDump) {
         if (logDumpIdx < logCount) {
             int16 k = (int16) logW - (int16) logCount + (int16) logDumpIdx;
-            char dl[60];
+            char dl[80];
             int16 dn;
             while (k < 0) k += ELEM_LOG_N;
-            dn = (int16) sprintf(dl, "LOG %u,%u,%u,%u,%u,%u,%u,%u,%d\r\n",
+            dn = (int16) sprintf(dl, "LOG %u,%u,%u,%u,%u,%u,%u,%u,%d,%d,%d,%u,H%u\r\n",
                                  (unsigned) elemLog[k].t, (unsigned) elemLog[k].mode,
                                  (unsigned) elemLog[k].stg, (unsigned) elemLog[k].cand,
                                  (unsigned) elemLog[k].rs, (unsigned) elemLog[k].l,
                                  (unsigned) elemLog[k].r, (unsigned) elemLog[k].c,
-                                 (int) elemLog[k].duty * 4);
+                                 (int) elemLog[k].duty * 4,
+                                 (int) elemLog[k].spd, (int) elemLog[k].ds,
+                                 (unsigned) elemLog[k].dark, (unsigned) elemLog[k].huan);
             if (dn > 0) usb_cdc_write_buffer((const uint8 *) dl, (uint16) dn);
             logDumpIdx++;
             return;                      // 这一拍只发一条日志
@@ -693,7 +708,7 @@ void main(void) {
                 if ((uint16) (msTick - logLastMs) >= 50) {
                     logLastMs = msTick;
                     elemLog[logW].t = (uint16) (msTick - logStartMs);
-                    elemLog[logW].mode = (uint8) RUN_MODE;
+                    elemLog[logW].mode = (uint16) RUN_MODE;
                     elemLog[logW].stg = elemStageDbg;
                     elemLog[logW].cand = elemCandDbg;
                     elemLog[logW].rs = roundScoreDbg;
@@ -702,7 +717,16 @@ void main(void) {
                     elemLog[logW].c = (uint8) (centerLineCount > 255 ? 255 : centerLineCount);
                     /* duty 压到 1/4 存，±395 → ±98，一字节够用 */
                     elemLog[logW].duty = (int8) (currentDuty / 4);
-                    logW = (uint8) ((logW + 1) % ELEM_LOG_N);
+                    elemLog[logW].err = faultFlags;
+                    elemLog[logW].spd = currentSpeed;
+                    elemLog[logW].ds = setSpeed;
+                    elemLog[logW].dark = darkCount;
+                    elemLog[logW].huan = (uint8) (elemActive == ELEM_ROUND);
+                    /* logW 是 uint16，不能强转 uint8：512 取模的结果是 0~511，
+                     * 截成 8 位后写指针只在 0~255 循环，256~511 号槽位永远是
+                     * 初始 0；而 logCount 仍会累加到 512，回放时就把半区空槽
+                     * 一并吐出来（现场日志前 200 多条 LOG 0,...,H0 即由此产生）。 */
+                    logW = (uint16) ((logW + 1) % ELEM_LOG_N);
                     if (logCount < ELEM_LOG_N) logCount++;
                 }
 
@@ -739,8 +763,9 @@ void main(void) {
                  * 但 rdCandBits() 是只读的，只反映本帧视觉。
                  * 推着车沿赛道逐点走，看 CAND 就知道"如果车在跑，这里会不会
                  * 被判成环岛入口"，以及缺的是哪一条：
-                 *   右环岛 bit0 外侧>16点 / bit1 外侧末点行<=18 / bit2 内侧<7点
-                 *   左环岛 bit4/5/6 镜像          → 三条全 1 才是完整候选 */
+                 *   右环岛 bit0 外侧>16点 / bit1 外侧末点行<=42 / bit2 内侧<7点 /
+                 *   bit3 外侧够直；左环岛 bit4/5/6/7 镜像
+                 *   → 0x0F / 0xF0 才是完整候选，bit3/7 为 0 更像普通急弯 */
                 elemCandDbg = rdCandBits();
             }
             frameBusy = 0;   // 消费完毕，允许 ISR 搬入下一帧
@@ -853,8 +878,6 @@ void loadRoad() {
     memcpy(LBorder, LRoad, LBorderCount * sizeof(Point));
     RBorderCount = func_limit_ab(RRoadCount, 0, expRoadCount);
     memcpy(RBorder, RRoad, RBorderCount * sizeof(Point));
-    getGodRoadLine(LRoad, LRoadCount);
-    getGodRoadLine(RRoad, RRoadCount);
     /* 用两侧边界的实测宽度修正单侧外推的假设半宽。
      * 参考实现把 centerLineDistance 固定成 18 像素，实际赛道更宽时，
      * 只有一侧可见的那几行会按 18 外推，中线整体偏向可见侧，

@@ -14,7 +14,6 @@ volatile int16 desiredSpeed = 0;
 volatile uint16 msTick = 0;
 volatile uint8 outOfTrack = 0;
 const int16 tani[31];        // 索引域 0~30：atan2_int 的返回值上限就是 ±30
-extern uint8 switch1;             // 仅 DEBUG_MODE=1 的画面叠加使用
 extern volatile uint8 borderIn;
 static uint8 DEVICE_H = PP_LOOKAHEAD_PX;   // 初值即纯跟踪等效轴距，motorInit 可覆盖
 volatile int8 stop;
@@ -39,6 +38,7 @@ static uint8 satCnt = 0, revCntL = 0, revCntR = 0; //PID 饱和 / 正反馈计�
 static uint8 outCnt = 0;                           //出界判定消抖计数
 static uint16 kickCnt = 0;                         //起跑助推剩余节拍
 static uint16 rampDuty = MOTOR_RAMP_START;         //占空比爬坡当前值（诊断用）
+static volatile uint16 speedRampEndMs = 0;         //起步斜坡结束时刻
 static int16 pidOutL = 0, pidOutR = 0;             //PID 实际输出，供异常检测读取
 static volatile uint8 servoTestBusy = 0;           //舵机自检进行中：控制中断暂时不写舵机
 
@@ -195,7 +195,15 @@ static void pitHandler() {
     int32 cntR, cntL, avg;
     int16 diff;
     msTick += 5;               // 全局毫秒节拍：按键长按、帧看门狗都以它为基准
-    setSpeed = desiredSpeed;   // 本拍唯一一次读取目标速度，之后全部用这个副本
+    /* 起步斜坡：只限制目标速度的上升沿。
+     * 下降沿（入弯、刹车、急停）立即跟随 desiredSpeed，避免减速也被拖延。 */
+    if (desiredSpeed > setSpeed &&
+        (int16) (speedRampEndMs - msTick) > 0) {
+        setSpeed = (int16) (setSpeed + SPEED_RAMP_STEP);
+        if (setSpeed > desiredSpeed) setSpeed = desiredSpeed;
+    } else {
+        setSpeed = desiredSpeed;
+    }
     // 全程 32 位：C251 的 int 只有 16 位，负数左移与两轮求和都会溢出
     cntR = -(int32) encoder_get_count(PWMA_ENCODER) * 2;
     cntL = (int32) encoder_get_count(PWMC_ENCODER) * 2;
@@ -455,10 +463,6 @@ void alongLine(Point roadLine[], int16 count, int16 aimPos) {
         pct = func_limit_ab(pct, BEND_STEER_PCT, BEND_STEER_MAX);
         d = (int8) func_limit_ab((int32) d * pct / 100, -30, 30);
     }
-#if (DEBUG_MODE)
-    if (switch1)
-        ips200_draw_point(aimCol, aimRow + MT9V03X_H + 40, RGB565_RED);
-#endif
     setServoDuty(d);
 }
 
@@ -482,15 +486,18 @@ void setServoDuty(int8 d) {
      * 不做连乘，避免两个限速叠成 25% 把车拖停。 */
     if (elemSpeedRatio < slow) slow = elemSpeedRatio;
     d = (int8) func_limit(d, 30);
+    /* 环岛状态机只写 elemSteerBiasDeg，若这里不读，状态机进了环岛、
+     * 舵机却没有任何入环角。偏置同时作为该方向的最低打角：入口视觉中线
+     * 偏向直行时，纯相加会被反向视觉转角抵消，表现为"车头偏过去又回正"。 */
+    d = (int8) func_limit_ab((int32) d + (int32) elemSteerBiasDeg, -30, 30);
+    if (elemSteerBiasDeg > 0 && d < elemSteerBiasDeg) d = elemSteerBiasDeg;
+    else if (elemSteerBiasDeg < 0 && d > elemSteerBiasDeg) d = elemSteerBiasDeg;
     lastSteerDeg = d;      // 十字路口用它做"保持进入时的朝向"
     /* 舵机目标偏移：每 1 度图像角度对应 c1 / STEER_DUTY_DIV 个 duty，
      * 打满 30 度得到 390 duty，正好落在 STEER_DUTY_LIMIT 以内。
      * 转向量与横向偏差保持线性，弯道里有比例可言。 */
     currentDuty = (int16) func_limit_ab((int32) d * c1 / STEER_DUTY_DIV,
                                         -STEER_DUTY_LIMIT, STEER_DUTY_LIMIT);
-#if (DEBUG_MODE)
-    if (switch1) ips200_show_int16(MT9V03X_W / 2, MT9V03X_H + 20, currentDuty);
-#endif
     /* 曲率限速的 tan 表索引是「角度本身」，不是放大后的 duty。
      * 原来用 currentDuty 查表，d 一过 13 就固定查 tan(32°)，
      * 不同弯道算出的限速完全一样，曲率限速等于没接上。
@@ -614,6 +621,12 @@ void controlReset(void) {
     motorLPID.base = motorLPID.last_error = motorLPID.llast_error = 0;
     motorRPID.base = motorRPID.last_error = motorRPID.llast_error = 0;
     setSpeedCommand(0);   // 目标速度只经这一个入口，控制中断下一拍就会读到 0
+    /* 发车从 0 开始爬坡，并把斜坡窗口从本次发车时刻重新计时。
+     * 两个 16 位量都在关中断下写，避免控制中断读到半新半旧的值。 */
+    interrupt_global_disable();
+    setSpeed = 0;
+    speedRampEndMs = (uint16) (msTick + SPEED_RAMP_MS);
+    interrupt_global_enable();
     duty = handle = 0;
     R = currentDuty = 0;
     bendHold = bendBrake = 100;   // 发车时清掉上一圈弯道的减速保持

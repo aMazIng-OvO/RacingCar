@@ -18,7 +18,7 @@
 #define SEEKFREE_STC32G144K_100PIN_OPENSOURCE_LIBRARY_SCURVE_H
 #include "zf_common_headfile.h"
 
-/* RUN_MODE / 串口 MODE 字段的取值，和 FORWARD(114) / CROSS(514) 同一量级不冲突 */
+/* RUN_MODE / 串口 MODE 字段的取值，和 FORWARD(114) / RUN_X_CROSS(514) 同一量级不冲突 */
 #define RUN_S_CURVE     314
 
 uint8 scDetect(void);   // 纯谓词：本帧是否满足 S 弯条件（不改任何状态）
