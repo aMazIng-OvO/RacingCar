@@ -35,8 +35,9 @@
 #define XC_MAX_PTS       6    // 强条件：两侧原始点数都低于该值
 #define XC_WEAK_PTS     10    // 弱条件：两侧都低于该值
 #define XC_MAX_CL       10    // 弱条件：中线点数低于该值
-#define XC_CONFIRM       2    // 连续成立帧数
+#define XC_CONFIRM       3    // 连续成立帧数；2 帧太短，弯道入口也常短暂满足
 #define XC_BACK_PTS     10    // 两侧都恢复到该值以上才算出了路口
+#define XC_RECOVER_CL   20    // 中线恢复到该值以上说明已离开路口宽白区
 
 /* ---- 动作参数 ---- */
 #define XC_SPEED_RATIO  60    // 路口内目标速度比例（%）
@@ -47,6 +48,7 @@
 #define XC_FREEZE_MS   250
 #define XC_MAX_MS      800    // 状态最长占用（兜底）
 #define XC_REARM_MS    500    // 退出后的再触发锁定：这段时间内不许重新判定
+#define XC_LOST_MS     150    // 两侧边界与中线同时为 0 持续这么久，视为丢线而非路口
 
 extern int16 centerLineCount;
 extern Point centerLine[expRoadCount];
@@ -58,6 +60,8 @@ static uint8 xcHit;          // 连续成立帧数
 static int8 xcHoldDeg;       // 进路口时记住的角度
 static uint16 xcMs;
 static uint16 xcExitMs;      // 上次退出时刻（0 = 从未退出过）
+static uint16 xcLostMs;      // 全丢线起始时刻
+static uint8 xcLostOn;       // 1 = 正在统计全丢线时间
 
 /* 强条件 + 弱条件，任意一个成立即可 */
 static uint8 xcRaw(void) {
@@ -70,6 +74,18 @@ static uint8 xcRaw(void) {
 
 uint8 xcDetect(void) {
     if (xcOn) return 1;                 // 已经在路口里
+    /* 全丢线不是路口：两侧边界与中线同时为 0 时没有任何"路口"证据，
+     * 若仍按 XC_MAX_PTS 命中，车出界后会一直保持固定角，无法恢复。 */
+    if (!LRawCount && !RRawCount && !centerLineCount) {
+        xcHit = 0;
+        return 0;
+    }
+    /* 中线还很长说明车在弯道里，两侧边界短只是弯道出口/内侧跑出画面，
+     * 不是路口中心的宽白区。此时不能抢走控制权。 */
+    if (centerLineCount > XC_RECOVER_CL) {
+        xcHit = 0;
+        return 0;
+    }
     /* 刚退出的一小段时间内不再判定：路口里若还有一段残影，会立刻二次触发，
      * 表现就是"一直保持着一个固定角出不来" */
     if (xcExitMs && (uint16) (msTick - xcExitMs) < XC_REARM_MS) {
@@ -108,6 +124,20 @@ uint8 xcBusy(void) {
     if (!xcOn) return 0;
     /* 两侧同时恢复 = 已经穿过去 */
     if (LRawCount > XC_BACK_PTS && RRawCount > XC_BACK_PTS) return 0;
+    /* 中线恢复 = 已经离开路口宽白区。弯道入口常出现"两侧短、中线还在"，
+     * 如果继续开环保持固定角，车会被带出弯道。 */
+    if (centerLineCount > XC_RECOVER_CL) return 0;
+    /* 全丢线持续 150 ms：不是路口中心，是车已经看不到赛道，交回主循环处理 */
+    if (!LRawCount && !RRawCount && !centerLineCount) {
+        if (!xcLostOn) {
+            xcLostOn = 1;
+            xcLostMs = msTick;
+        } else if ((uint16) (msTick - xcLostMs) >= XC_LOST_MS) {
+            return 0;
+        }
+    } else {
+        xcLostOn = 0;
+    }
     if ((uint16) (msTick - xcMs) > XC_MAX_MS) return 0;
     return 1;
 }
@@ -117,6 +147,7 @@ void xcExit(void) {
     xcHit = 0;
     xcHoldDeg = 0;
     xcMs = 0;
+    xcLostOn = 0;
     /* 记下退出时刻用于再触发锁定；msTick 恰为 0 时用 1 代替（0 表示"从未退出"） */
     xcExitMs = msTick ? msTick : 1;
     elemSpeedRatio = 100;
@@ -127,6 +158,8 @@ void xcReset(void) {
     xcHit = 0;
     xcHoldDeg = 0;
     xcMs = 0;
+    xcLostOn = 0;
+    xcLostMs = 0;
     xcExitMs = 0;
     elemSpeedRatio = 100;
 }

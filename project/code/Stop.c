@@ -26,23 +26,16 @@ void raceStart(void) {
     uint8 i; // 未标定提示的闪烁循环
 #endif
     /* A1：未标定一圈就发车，里程会在几百毫秒内越过 lapPulse-brakePulse，
-     * 表现为"起步跑一下就自己停"，而屏幕上看不出任何原因。这里直接拒绝发车。 */
+     * 表现为"起步跑一下就自己停"，而串口上看不出任何原因。这里直接拒绝发车。 */
 #if (CALIB_REQUIRED)
     if (!lapCalibrated) {
-#if (ENABLE_SCREEN)
-        ips200_clear(RGB565_WHITE);
-        ips200_show_string(0, 130, "CALIB LAP FIRST");
-        ips200_show_string(0, 160, "push 1 lap, press B3");
-        ips200_show_string(0, 190, "then B2 to start");
-#else
-        /* 屏幕不可用：蓝灯闪 3 下表示「未标定一圈，拒绝发车」 */
+        /* 蓝灯闪 3 下表示「未标定一圈，拒绝发车」 */
         for (i = 0; i < 3; i++) {
             gpio_set_level(STATUS_LED_PIN, STATUS_LED_ON);
             system_delay_ms(80);
             gpio_set_level(STATUS_LED_PIN, STATUS_LED_OFF);
             system_delay_ms(120);
         }
-#endif
         return;
     }
 #else

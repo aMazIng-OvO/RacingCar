@@ -32,7 +32,8 @@ void  rdExit(void);              // 收尾：清偏置与限速
 void  rdReset(void);             // 发车/急停强制复位
 uint8 rdStage(void);             // 1~5 = READY/START/IN/END/EXIT，0 = 空闲
 uint8 rdSide(void);              // 0 = 右环岛，1 = 左环岛
-/* 只读诊断（串口 CAND）：右环岛看 bit0/1/2，左环岛看 bit4/5/6，三条全 1 才是候选 */
+/* 只读诊断（串口 CAND）：右环岛看 bit0/1/2/3，左环岛看 bit4/5/6/7，
+ * 0x0F / 0xF0 才是完整候选；bit3/7 为 0 表示外侧太弯，更像普通急弯 */
 uint8 rdCandBits(void);
 uint8 rdScore(void);             // 只读：两侧积分确认的较大值（串口 RS）
 

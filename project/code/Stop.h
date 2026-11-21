@@ -11,12 +11,6 @@
 
 #include "zf_common_headfile.h"
 
-/* 屏幕已经硬件移除：显式给默认值，避免 #if (ENABLE_SCREEN) 因"宏未定义"
- * 被 C 预处理器静默判 0 —— 那种失效既不报错也不易察觉。 */
-#ifndef ENABLE_SCREEN
-#define ENABLE_SCREEN   0
-#endif
-
 /* 是否要求「先标定一圈」才允许发车：
  *   0 = 调试放行：不标定也能发车，且不会自动刹停（靠 B3 手动停车）
  *   1 = 正式比赛：未标定按 B2 拒绝发车（蓝灯闪 3 下） */
